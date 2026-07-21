@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { invoke, events } from '@sugr/runtime'
+import { invoke, events, type BridgeError } from '@sugr/runtime'
 import { SqlBridge } from './generated/SqlBridge.generated'
 import './App.css'
 
@@ -19,6 +19,8 @@ function App() {
   const [lastEvent, setLastEvent] = useState<string | null>(null)
   const [pong, setPong] = useState<string | null>(null)
   const [greeting, setGreeting] = useState<string | null>(null)
+  const [dbPath, setDbPath] = useState<string | null>(null)
+  const [clipboardText, setClipboardText] = useState('hello from sugr')
 
   useEffect(() => {
     // Java -> JS: Main.java emits this after every successful query.
@@ -63,8 +65,8 @@ function App() {
   async function handleSlowGreet() {
     setError(null)
     try {
-      // CompletableFuture<String> on the Java side - see SqlBridge.slowGreet's
-      // javadoc for why it completes synchronously rather than on a background thread.
+      // CompletableFuture<String> completed from a background thread on the Java
+      // side (see SqlBridge.slowGreet) - resolves the Promise correctly.
       const result = await SqlBridge.slowGreet('sugr')
       setGreeting(result)
     } catch (e) {
@@ -74,6 +76,33 @@ function App() {
 
   function handlePing() {
     events.emit('ping', { from: 'react', at: Date.now() })
+  }
+
+  async function handlePickFile() {
+    setError(null)
+    try {
+      // Native "open file" dialog (core.Dialogs) - see pickDatabaseFile's javadoc.
+      const path = await SqlBridge.pickDatabaseFile()
+      setDbPath(path)
+    } catch (e) {
+      // Structured error (com.sugr.bridge.BridgeException) - check `code` instead
+      // of parsing message text to tell "cancelled" apart from a real failure.
+      const err = e as BridgeError
+      if (err.code === 'DIALOG_CANCELLED') {
+        setDbPath(null)
+      } else {
+        setError(err.message ?? String(e))
+      }
+    }
+  }
+
+  async function handleCopyToClipboard() {
+    setError(null)
+    try {
+      await SqlBridge.copyToClipboard(clipboardText)
+    } catch (e) {
+      setError(String(e))
+    }
   }
 
   const columns = rows.length > 0 ? Object.keys(rows[0]) : []
@@ -89,10 +118,21 @@ function App() {
         <button type="button" onClick={handleListTables}>List tables</button>
         <button type="button" onClick={handlePing}>Emit ping event</button>
         <button type="button" onClick={handleSlowGreet}>slowGreet() (CompletableFuture)</button>
+        <button type="button" onClick={handlePickFile}>Pick a file (native dialog)</button>
       </div>
 
       {pong && <p>Reply to ping: {pong}</p>}
       {greeting && <p>slowGreet result: {greeting}</p>}
+      {dbPath && <p>Picked file: {dbPath}</p>}
+
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '1rem' }}>
+        <input
+          value={clipboardText}
+          onChange={(e) => setClipboardText(e.target.value)}
+          style={{ fontFamily: 'monospace' }}
+        />
+        <button type="button" onClick={handleCopyToClipboard}>Copy to clipboard</button>
+      </div>
 
       <textarea
         value={sql}

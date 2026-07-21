@@ -1,6 +1,7 @@
 package com.sugr.core;
 
 import com.sugr.bridge.Bridge;
+import com.sugr.bridge.BridgeException;
 import com.sugr.bridge.EventBus;
 import com.sugr.bridge.Json;
 
@@ -179,7 +180,13 @@ public final class Application {
                 } else {
                     Throwable cause = error instanceof java.util.concurrent.CompletionException && error.getCause() != null
                             ? error.getCause() : error;
-                    finalResult = Json.quote(cause.getMessage() == null ? cause.toString() : cause.getMessage());
+                    // Bridge.dispatch()'s contract is to always fail with a BridgeException -
+                    // encode its {code, message, data} shape so JS can distinguish error kinds
+                    // instead of just getting a string. The instanceof is defensive, not expected.
+                    BridgeException bridgeError = cause instanceof BridgeException be
+                            ? be
+                            : new BridgeException(cause.getMessage() == null ? cause.toString() : cause.getMessage(), cause);
+                    finalResult = bridgeError.toJson().encode();
                     isError = true;
                 }
                 reply(seqStr, finalResult, isError);

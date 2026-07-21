@@ -2,6 +2,12 @@
 import { invoke } from '@sugr/runtime'
 
 export const SqlBridge = {
+  pickDatabaseFile(): Promise<string> {
+    return invoke('pickDatabaseFile', [])
+  },
+  copyToClipboard(text: string): Promise<void> {
+    return invoke('copyToClipboard', [text])
+  },
   connect(path: string): Promise<string> {
     return invoke('connect', [path])
   },

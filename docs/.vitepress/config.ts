@@ -21,6 +21,7 @@ export default withMermaid(defineConfig({
           { text: 'Window & frontend', link: '/guide/window' },
           { text: 'Binding Java to JS (@Bind)', link: '/guide/bind' },
           { text: 'Events', link: '/guide/events' },
+          { text: 'Native dialogs & clipboard', link: '/guide/native' },
           { text: 'Building & packaging', link: '/guide/build' },
         ],
       },

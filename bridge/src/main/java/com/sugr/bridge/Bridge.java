@@ -35,7 +35,7 @@ public final class Bridge {
     public CompletableFuture<String> dispatch(String requestJson) {
         List<String> args = Json.parseStringArray(requestJson);
         if (args.isEmpty() || args.get(0) == null) {
-            return CompletableFuture.failedFuture(new BridgeException("invoke() requires a method name"));
+            return CompletableFuture.failedFuture(new BridgeException("BAD_REQUEST", "invoke() requires a method name"));
         }
         String method = args.get(0);
         String params = args.size() > 1 && args.get(1) != null ? args.get(1) : "{}";
@@ -56,7 +56,8 @@ public final class Bridge {
 
         Handler handler = handlers.get(method);
         if (handler == null) {
-            return CompletableFuture.failedFuture(new BridgeException("No handler registered for method: " + method));
+            return CompletableFuture.failedFuture(
+                    new BridgeException("METHOD_NOT_FOUND", "No handler registered for method: " + method));
         }
         try {
             return CompletableFuture.completedFuture(handler.handle(params));

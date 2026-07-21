@@ -27,8 +27,8 @@ events.on<string>('query-executed', (payload) => console.log(payload))
 
 `Application.emit()` is safe to call from **any thread**, including a
 background thread - it always hops onto the UI thread via `webview_dispatch`
-before touching the webview, unlike replying to a bind/invoke call (see the
-`@Bind` CompletableFuture caveat).
+before touching the webview, same as replying to a bind/invoke call (see
+[How it works](/how-it-works#thread-model)).
 
 ## JS → Java
 

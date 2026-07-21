@@ -18,11 +18,24 @@ declare global {
 }
 
 /**
+ * Shape of a rejected `invoke()`/`@Bind` call - matches `com.sugr.bridge.BridgeException.toJson()`.
+ * `code` is a short, stable string (e.g. `"METHOD_NOT_FOUND"`, or whatever a
+ * handler's own `BridgeException(code, message)` used) - check it instead of
+ * parsing `message` text to distinguish error kinds, e.g. a cancelled native
+ * dialog vs. an actual failure.
+ */
+export interface BridgeError {
+  code: string
+  message: string
+  data?: unknown
+}
+
+/**
  * Calls a Java-side method registered via `Application.builder().bind(method, ...)`
  * or generated from `@Bind` (see `com.sugr.bridge.Json` in the `bridge` module -
  * args are JSON-encoded positionally, so strings/numbers/booleans/objects/arrays
  * all work). Prefer the typed stub generated per class (e.g. `SqlBridge.connect(...)`)
- * over calling this directly.
+ * over calling this directly. Rejects with a {@link BridgeError}.
  */
 export async function invoke<T = unknown>(method: string, args: unknown[] = []): Promise<T> {
   return window.invoke(method, JSON.stringify(args)) as Promise<T>

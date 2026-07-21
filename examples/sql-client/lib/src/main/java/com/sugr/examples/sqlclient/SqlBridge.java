@@ -1,6 +1,9 @@
 package com.sugr.examples.sqlclient;
 
 import com.sugr.bridge.Bind;
+import com.sugr.bridge.BridgeException;
+import com.sugr.core.Clipboard;
+import com.sugr.core.Dialogs;
 import com.sugr.core.NativeLibrary;
 
 import java.lang.foreign.Arena;
@@ -56,6 +59,27 @@ final class SqlBridge implements AutoCloseable {
                 MethodType.methodType(int.class, MemorySegment.class, int.class, MemorySegment.class, MemorySegment.class),
                 FunctionDescriptor.of(ValueLayout.JAVA_INT,
                         ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    }
+
+    /**
+     * Demo of {@link Dialogs} + structured {@link BridgeException} (Phase 4b) -
+     * shows a native "open file" dialog and returns the picked path, or throws
+     * a {@code "DIALOG_CANCELLED"} error the frontend can distinguish from a
+     * real failure (see {@code App.tsx}'s handling of this call).
+     */
+    @Bind
+    String pickDatabaseFile() {
+        String path = Dialogs.openFile("Choose a SQLite database", "db", "sqlite");
+        if (path == null) {
+            throw new BridgeException("DIALOG_CANCELLED", "No file was selected");
+        }
+        return path;
+    }
+
+    /** Demo of {@link Clipboard} (Phase 4b). */
+    @Bind
+    void copyToClipboard(String text) {
+        Clipboard.write(text);
     }
 
     @Bind
