@@ -96,6 +96,18 @@ function App() {
     }
   }
 
+  async function handleOpenSecondWindow() {
+    setError(null)
+    try {
+      // Multi-window (Phase 4c) - opens a second, always-on-top window sharing
+      // this app's native library/UI thread. Stays hand-written (not @Bind) since
+      // it needs the Application instance, not just SqlBridge.
+      await invoke('openSecondWindow', [])
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function handleCopyToClipboard() {
     setError(null)
     try {
@@ -119,7 +131,11 @@ function App() {
         <button type="button" onClick={handlePing}>Emit ping event</button>
         <button type="button" onClick={handleSlowGreet}>slowGreet() (CompletableFuture)</button>
         <button type="button" onClick={handlePickFile}>Pick a file (native dialog)</button>
+        <button type="button" onClick={handleOpenSecondWindow}>Open second window</button>
       </div>
+      <p style={{ color: '#666', fontSize: '0.9em' }}>
+        Try closing this window - a native confirm dialog can veto it (see Main.java's onCloseRequested).
+      </p>
 
       {pong && <p>Reply to ping: {pong}</p>}
       {greeting && <p>slowGreet result: {greeting}</p>}

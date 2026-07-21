@@ -77,6 +77,37 @@ public final class Dialogs {
         }
     }
 
+    /** Shows a native Yes/No confirm dialog; returns true if the user picked Yes. */
+    public static boolean confirm(String title, String message) {
+        try {
+            if (Os.isWindows()) {
+                String result = runPowerShell("""
+                        Add-Type -AssemblyName System.Windows.Forms
+                        $result = [System.Windows.Forms.MessageBox]::Show(%s, %s, [System.Windows.Forms.MessageBoxButtons]::YesNo)
+                        Write-Output $result
+                        """.formatted(psQuote(message), psQuote(title)));
+                return "Yes".equals(result);
+            } else if (Os.isMac()) {
+                String result = runAndTrim("osascript", "-e", "button returned of (display dialog "
+                        + appleScriptQuote(message) + " with title " + appleScriptQuote(title)
+                        + " buttons {\"No\", \"Yes\"} default button \"Yes\")");
+                return "Yes".equals(result);
+            } else {
+                try {
+                    Process p = new ProcessBuilder("zenity", "--question", "--title=" + title, "--text=" + message)
+                            .redirectErrorStream(true)
+                            .start();
+                    p.getInputStream().readAllBytes();
+                    return p.waitFor() == 0;
+                } catch (IOException e) {
+                    return true; // zenity missing - don't block the user on an unanswerable dialog
+                }
+            }
+        } catch (IOException | InterruptedException e) {
+            return true; // best-effort - don't block the user on a failed dialog
+        }
+    }
+
     private static String openFileScript(String title, String[] extensions) {
         return """
                 Add-Type -AssemblyName System.Windows.Forms

@@ -2,7 +2,9 @@ package com.sugr.examples.sqlclient;
 
 import com.sugr.bridge.Json;
 import com.sugr.core.Application;
+import com.sugr.core.Dialogs;
 import com.sugr.core.Frontend;
+import com.sugr.core.Window;
 
 import java.util.List;
 import java.util.Map;
@@ -50,6 +52,27 @@ public final class Main {
                         app.emit("pong", Json.quote("pong! (Java received: " + payload + ")"));
                     }
                 })
+                // Demo of Window.Builder's multi-window support (Phase 4c) - opens a
+                // second window sharing this app's native library/arena/UI thread,
+                // pointed at the same frontend. Always-on-top demonstrates window chrome.
+                .bind("openSecondWindow", params -> {
+                    Application app = appRef.get();
+                    app.openWindow(new Window.Builder()
+                            .title("sugr - SQL client (window 2)")
+                            .size(700, 500)
+                            .alwaysOnTop(true)
+                            .frontend(devServerUrlFromEnv() != null
+                                    ? Frontend.devServer(devServerUrlFromEnv())
+                                    : Frontend.embedded("/frontend")),
+                            null);
+                    return "null";
+                })
+                // Demo of window events (Phase 4c) - a vetoable close (reusing Dialogs
+                // from Phase 4b) plus focus/blur/resize logging.
+                .onCloseRequested(window -> Dialogs.confirm("Quit?", "Close the sql-client window?"))
+                .onFocus(window -> System.out.println("[sugr] window focused: " + window))
+                .onBlur(window -> System.out.println("[sugr] window blurred: " + window))
+                .onResize((window, w, h) -> System.out.println("[sugr] window resized: " + w + "x" + h))
                 .onReady(appRef::set);
 
         generatedBridge.bindTo(builder);
