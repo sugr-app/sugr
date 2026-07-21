@@ -18,6 +18,10 @@ final class DoctorCommand implements Callable<Integer> {
         allOk &= check("Gradle", () -> firstLineContaining(ProcessUtil.runCapture("gradle", "-v"), "Gradle "));
         if (ProcessUtil.isWindows()) {
             allOk &= check("WebView2 Runtime", this::checkWebView2);
+        } else if (isMac()) {
+            allOk &= check("Xcode Command Line Tools", this::checkXcodeCLT);
+        } else {
+            allOk &= check("webkit2gtk-dev", this::checkWebkit2Gtk);
         }
 
         System.out.println();
@@ -62,6 +66,29 @@ final class DoctorCommand implements Callable<Integer> {
                 "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
                 "/v", "pv");
         return firstLineContaining(out, "pv");
+    }
+
+    private static boolean isMac() {
+        return System.getProperty("os.name", "").toLowerCase().contains("mac");
+    }
+
+    private String checkXcodeCLT() {
+        // Prints the active developer directory if the CLT (or full Xcode) is
+        // installed, fails with a non-zero exit (empty capture) otherwise - the
+        // same tool the FFM/webview build needs for its C compiler/linker.
+        String out = ProcessUtil.runCapture("xcode-select", "-p");
+        return firstLine(out);
+    }
+
+    private String checkWebkit2Gtk() {
+        // pkg-config is the standard cross-distro way to check for a dev
+        // package (headers + .pc file) - webview's WebKitGTK binding needs one
+        // of these two ABI versions depending on distro/WebKitGTK release.
+        String out = ProcessUtil.runCapture("pkg-config", "--modversion", "webkit2gtk-4.1");
+        if (out == null || out.isBlank()) {
+            out = ProcessUtil.runCapture("pkg-config", "--modversion", "webkit2gtk-4.0");
+        }
+        return firstLine(out);
     }
 
     private static String firstLine(String output) {
