@@ -16,6 +16,61 @@ using the [Foreign Function & Memory API](https://openjdk.org/jeps/454)
 `invoke`/`emit` bindings, and for `sqlite3_exec`'s row callback in the
 `examples/sql-client` app).
 
+## Application lifecycle
+
+`Application.builder()` only collects configuration - `title()`, `size()`,
+`frontend()`, `bind()`/`bindAsync()`, `on()`, `onReady()` all just populate a
+`Builder`. Nothing native happens until `builder.run()`:
+
+1. **Load the native lib.** Extract the bundled `webview.dll`/`.so`/`.dylib`
+   from the classpath to a temp file, bind its exported functions via FFM
+   (`NativeLibrary`).
+2. **Create the window.** `webview_create` returns a handle; a `UiDispatcher`
+   is built around it (from this point, sugr knows which thread is "the UI
+   thread" for the rest of the run).
+3. **Configure it.** `webview_set_title`, `webview_set_size`.
+4. **Inject the events bootstrap.** `webview_init` runs a small script
+   (`window.__sugrEvents__`, an event emitter) before *any* page loads,
+   including the very first navigation.
+5. **Bind the two fixed upcalls.** `"invoke"` (JS calls into Java - see
+   [The bridge protocol](#the-bridge-protocol) below) and `"emit"` (JS→Java
+   events). This is the *entire* JS↔Java surface - every `@Bind` method and
+   every hand-written `bind()` call goes through the same `"invoke"` binding.
+6. **Navigate.** To the dev server URL (`sugr dev`, real HMR) or to the
+   embedded `AssetServer`'s local base URL (`sugr build`'s production path) -
+   see [Window & frontend](/guide/window).
+7. **Fire `onReady(this)`.** The one point where your code gets the
+   `Application` handle before the event loop starts - stash it if
+   background code needs to call `emit()` later.
+8. **Block on the event loop.** `webview_run` blocks the calling thread until
+   the window closes. This is why `run()` must be called from your app's
+   main thread and nowhere else.
+
+```mermaid
+flowchart TD
+    A["Builder: title, size, frontend, bind, bindAsync, on, onReady"] -->|builder.run| B
+    B["1. load webview.dll via FFM"] --> C["2. webview_create returns handle, plus a new UiDispatcher"]
+    C --> D["3. webview_set_title, webview_set_size"]
+    D --> E["4. webview_init runs the events bootstrap JS"]
+    E --> F["5. webview_bind invoke, and webview_bind emit"]
+    F --> G["6. webview_navigate to the target url"]
+    G --> H["7. onReady callback fires"]
+    H --> I["8. webview_run blocks the calling thread"]
+    I -.->|JS/Java traffic via the invoke and emit upcalls, until the window closes| I
+    I --> J["webview_destroy"]
+    J --> K["assetServer.stop, embedded mode only"]
+```
+
+While the loop runs, everything is event-driven, not sequential - see
+[The bridge protocol](#the-bridge-protocol) for the `invoke`/`emit` upcalls
+and [Thread model](#thread-model) for how replies/events hop back onto the UI
+thread from other threads.
+
+**Shutdown:** `webview_run` returns once the user closes the window →
+`webview_destroy` → the embedded `AssetServer` (if any) is stopped. There's
+currently no app-level "before close" hook - closing the window ends
+`run()` with no further extension point.
+
 ## The bridge protocol
 
 JS never calls arbitrary native functions - there's exactly one entry point,
@@ -23,15 +78,20 @@ JS never calls arbitrary native functions - there's exactly one entry point,
 in `Application.run()`. Every `@Bind`-generated or hand-written binding goes
 through it:
 
-```
-JS: Backend.hello("world")
- -> invoke("hello", ["world"])                          (@sugr/runtime)
- -> window.invoke("hello", '["world"]')                 (raw call)
- -> native req: ["hello", "[\"world\"]"]                (webview's own JS glue wraps all args)
- -> Bridge.dispatch(reqJson)                             (bridge module - Java)
-   -> looks up the "hello" handler, calls it, gets a JSON result string
- -> webview_return(handle, seq, isError, resultJson)
- -> JS Promise resolves/rejects
+```mermaid
+sequenceDiagram
+    participant JS as JS (@sugr/runtime)
+    participant Raw as window.invoke (webview glue)
+    participant App as Application (core)
+    participant Bridge as Bridge (bridge module)
+
+    JS->>Raw: invoke("hello", ["world"])
+    Raw->>App: native req: ["hello", "[\"world\"]"]
+    App->>Bridge: Bridge.dispatch(reqJson)
+    Bridge->>Bridge: look up "hello" handler, call it
+    Bridge-->>App: JSON result string
+    App->>Raw: webview_return(handle, seq, isError, resultJson)
+    Raw-->>JS: Promise resolves/rejects
 ```
 
 `Bridge` doesn't know about webview at all - `Application` (in `core`) owns

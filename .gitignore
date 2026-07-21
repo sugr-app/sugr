@@ -10,7 +10,8 @@ build/
 # Node / pnpm
 node_modules/
 dist/
-.vitepress/cache/
+**/.vitepress/cache/
+**/.vite/
 *.log
 
 # IDE

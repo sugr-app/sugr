@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
+import { withMermaid } from 'vitepress-plugin-mermaid'
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: 'sugr',
   description: 'Build lightweight desktop apps with Java and web technologies.',
   cleanUrls: true,
@@ -39,4 +40,14 @@ export default defineConfig({
       provider: 'local',
     },
   },
-})
+
+  vite: {
+    optimizeDeps: {
+      // mermaid imports dayjs via a subpath ("dayjs/dayjs.min.js") that Vite's
+      // dep scanner doesn't pick up on its own, so it gets served raw (CJS)
+      // instead of pre-bundled to ESM - forcing it here fixes
+      // "doesn't provide an export named: 'default'" in the browser console.
+      include: ['mermaid', 'dayjs'],
+    },
+  },
+}))
