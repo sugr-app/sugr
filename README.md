@@ -6,16 +6,19 @@ Sugr is a desktop app framework that pairs a Java backend with a React (or any w
 
 ## Status
 
-🚧 **Phase 3 done** (annotation processor, CLI, templates + CI, docs).
+🚧 **Phase 4a in progress** (closing out v0.1: annotation processor, CLI,
+templates + CI, docs are done; native-image packaging just landed).
 `core`, `bridge`, `processor`, `cli`, and `@sugr/runtime` exist as a Gradle +
 pnpm monorepo. [`examples/sql-client`](examples/sql-client) runs entirely on
 the public API: most methods are exposed with a single `@Bind` annotation (no
 hand-written JSON), one method stays hand-written to show it composes with
 generated bindings, and the two-way event bus works end to end.
-`sugr init/dev/build/doctor` automate the day-to-day workflow (see below and
-[`docs/`](docs)). OS installers (`sugr package`) aren't built yet.
+`sugr init/dev/build/doctor/package` automate the day-to-day workflow (see
+below and [`docs/`](docs)) - `sugr package` builds a native-image binary and
+wraps it into a real OS installer (NSIS on Windows, tested end to end;
+macOS/Linux follow the same shape but are unverified so far).
 `@sugr/runtime` is workspace-only for now - nothing is published anywhere
-(that's Phase 4). See [plan.md](plan.md) for the full roadmap.
+(that's later in Phase 4). See [plan.md](plan.md) for the full roadmap.
 
 📖 Full docs: run `pnpm --filter sugr-docs dev` and open the printed
 localhost URL (no hosted docs site yet).
@@ -117,15 +120,16 @@ The resulting `cli/build/install/sugr/bin/sugr(.bat)` supports:
 | `sugr doctor` | Checks Java/GraalVM, native-image, Node, pnpm, Gradle, WebView2 (Windows) |
 | `sugr init <name>` | Scaffolds the [`templates/react-ts`](templates/react-ts) template into `examples/<name>` of the current checkout and registers it in settings.gradle.kts |
 | `sugr dev` | Runs the Vite dev server and the Java app together - Vite gives the frontend HMR, and `sugr dev` itself watches `lib/src/**/*.java` and rebuilds+restarts the app on change. Auto-detects the right Gradle task/root by walking up to the nearest settings.gradle.kts |
-| `sugr build` | Builds the frontend, embeds it into resources, then runs the Gradle build |
+| `sugr build` | Builds the frontend, embeds it into resources, then runs the Gradle build (JVM-based, not native-image) |
+| `sugr package` | Builds a native-image binary and wraps it into an OS installer - NSIS (`.exe`) on Windows, tested end to end; `.dmg`/`.deb` on macOS/Linux follow the same shape but are unverified so far |
 
 `dev`/`build` auto-detection covers the common case (run them from the app's
 directory); pass `--task`/`--gradle-dir` explicitly if it guesses wrong.
 `sugr init` is scoped to scaffolding *inside* this checkout for now - since
 nothing is published, a scaffolded app can only depend on `core`/`bridge` as
-sibling Gradle projects in the same build. `sugr package` (OS installers) and
-native-image packaging inside `sugr build` aren't automated yet - native
-builds still need a Developer Command Prompt on Windows (see
+sibling Gradle projects in the same build. On Windows, `sugr package` locates
+Visual Studio and sources its `vcvars64.bat` itself before invoking
+native-image, so there's no manual "Developer Command Prompt" step (see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the CLI itself
 building natively cross-platform in CI, via the Gradle
 [native-image plugin](https://graalvm.github.io/native-build-tools/latest/gradle-plugin.html)).

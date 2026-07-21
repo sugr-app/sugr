@@ -27,36 +27,45 @@ The result is a runnable JAR (via `gradle run`, or the `application` plugin's
 distribution) that serves the embedded frontend - still needs a JVM
 installed on the machine that runs it.
 
-## Native binary
-
-Not automated by `sugr build` yet - build it manually, and only on Windows
-today needs a **Developer Command Prompt** (native-image's C compiler step
-needs `cl.exe`/`link.exe` on PATH, which a plain terminal doesn't have):
+## Native binary + installer
 
 ```sh
-# from a Developer Command Prompt / after running vcvarsall.bat on Windows
-native-image -cp "lib/build/classes/java/main;lib/build/resources/main;<core.jar>;<bridge.jar>" \
-  <your.Main.class> -o my-app --no-fallback -Os --gc=serial -march=compatibility
+sugr package
 ```
 
-Before your first native-image build, run the app once with
-`-agentlib:native-image-agent=config-output-dir=...` to generate
-`reachability-metadata.json` for your FFM downcalls/upcalls - `@Bind`-generated
-dispatchers don't need this (no reflection by construction), but the FFM
-webview/native-library bindings in `core` do. See `examples/sql-client`'s
-`META-INF/native-image/` directory for a generated example.
+Builds a native-image binary (via Gradle's `nativeCompile` task - every app
+generated from the `react-ts` template has the
+[GraalVM native-image Gradle plugin](https://graalvm.github.io/native-build-tools/latest/gradle-plugin.html)
+wired up already) and wraps it directly into an OS installer - no JVM
+involved at all in the final artifact. On Windows this is genuinely one
+command with nothing to set up first: `sugr package` locates your Visual
+Studio install and sources its `vcvars64.bat` itself (native-image's C
+compiler step needs `cl.exe`/`link.exe` on PATH, which a plain terminal
+doesn't have - this used to mean manually opening a "Developer Command
+Prompt for VS" before building), then wraps the resulting `.exe` with
+[NSIS](https://nsis.sourceforge.io/) into a proper installer (Start Menu +
+desktop shortcuts, uninstaller). macOS (`.dmg` via `hdiutil`) and Linux
+(`.deb` via `dpkg-deb`) follow the same shape in the code but haven't been
+exercised on those OSes yet.
 
-The `cli` module *is* wired up with the official
-[GraalVM native-image Gradle plugin](https://graalvm.github.io/native-build-tools/latest/gradle-plugin.html),
-so building the CLI itself natively is one command (same Developer Command
-Prompt requirement on Windows):
-
-```sh
-./gradlew :cli:nativeCompile
 ```
+sugr package [--name <name>] [--app-version <version>] [--icon <path>]
+             [--lib-dir lib] [--dest dist]
+```
+
+If your app calls into a native library of its own beyond `core`'s webview
+binding (like `examples/sql-client` does with `libsqlite3`), you'll need to
+(re-)generate FFM reachability metadata once: run the app on a plain JVM with
+`-agentlib:native-image-agent=config-output-dir=...` attached, exercise every
+code path that makes a native call, close the app normally (not force-killed
+- the agent only writes its config on a graceful JVM shutdown), then copy the
+resulting `reachability-metadata.json` into your module's
+`src/main/resources/META-INF/native-image/<any>/<any>/`. The `react-ts`
+template already ships the metadata for `core`'s own webview bindings, so a
+fresh `sugr init` app can run `sugr package` immediately - this step is only
+needed once you add your own native library.
 
 ## What's not automated yet
 
-- Native-image compilation inside `sugr build` (see above - manual for now)
-- `sugr package` (`.msi`/`.dmg`/`.deb` installers)
 - Bundling a WebView2 runtime bootstrapper for Windows 10 machines that don't have it preinstalled
+- Publishing `core`/`bridge`/`processor` to Maven Central or `@sugr/runtime` to npm

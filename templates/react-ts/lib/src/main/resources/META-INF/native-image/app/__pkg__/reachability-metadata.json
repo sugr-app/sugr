@@ -1,0 +1,26 @@
+{
+  "resources": [
+    { "glob": "frontend/**" },
+    { "glob": "native/*.dll" },
+    { "glob": "native/*.so" },
+    { "glob": "native/*.dylib" },
+    { "glob": "META-INF/services/com.sun.net.httpserver.spi.HttpServerProvider" },
+    { "glob": "META-INF/services/java.nio.channels.spi.SelectorProvider" },
+    { "glob": "META-INF/services/java.time.zone.ZoneRulesProvider" }
+  ],
+  "foreign": {
+    "downcalls": [
+      { "returnType": "void", "parameterTypes": ["void*", "void*", "void*"] },
+      { "returnType": "void*", "parameterTypes": ["jint", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "jint", "jint", "jint"] },
+      { "returnType": "void", "parameterTypes": ["void*", "void*", "void*", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "void*", "jint", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*"] }
+    ],
+    "upcalls": [
+      { "returnType": "void", "parameterTypes": ["void*", "void*", "void*"] },
+      { "returnType": "void", "parameterTypes": ["void*", "void*"] }
+    ]
+  }
+}
