@@ -9,7 +9,7 @@ import picocli.CommandLine.Command;
 @Command(
         name = "sugr",
         mixinStandardHelpOptions = true,
-        version = "sugr 0.0.1",
+        version = "sugr 0.1.0-dev",
         description = "Run and build sugr apps.",
         subcommands = {DoctorCommand.class, DevCommand.class, BuildCommand.class, InitCommand.class, PackageCommand.class}
 )

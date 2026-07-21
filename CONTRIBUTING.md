@@ -30,7 +30,7 @@ pnpm install              # links @sugr/runtime and docs deps across the workspa
 | `core/` | `Application`/`Frontend` - window lifecycle, FFM webview bindings |
 | `bridge/` | `Bridge`, `Json`, `Bind`, `EventBus` - the wire protocol, no webview knowledge |
 | `processor/` | `@Bind` annotation processor - generates dispatchers + TS stubs |
-| `cli/` | The `sugr` command (`doctor`/`init`/`dev`/`build`) |
+| `cli/` | The `sugr` command (`doctor`/`init`/`dev`/`build`/`package`) |
 | `runtime-js/` | `@sugr/runtime` - the JS half of the bridge |
 | `templates/react-ts/` | What `sugr init` scaffolds |
 | `examples/sql-client/` | The reference app - exercises every part of the stack |
@@ -50,12 +50,28 @@ pnpm install              # links @sugr/runtime and docs deps across the workspa
 - Touching `docs/`: `pnpm --filter sugr-docs dev` for a live preview,
   `pnpm --filter sugr-docs build` to check it builds cleanly.
 
+## Versioning
+
+sugr is pre-1.0 (currently working through `plan.md`'s v0.1 "hardening"
+phase) - under SemVer's own rules for 0.x releases, that means the *entire*
+public API can still change between minor versions, not just parts of it.
+`@Experimental` (`com.sugr.bridge.Experimental`) exists for something more
+specific: flagging API that's newer or riskier than that already-unstable
+baseline and likely to be redesigned in the very next minor version (e.g. a
+brand-new area added in one release that hasn't proven itself yet). Most of
+today's API (`Application.Builder`, `Bridge`, `EventBus`, `@Bind`) predates
+the annotation and isn't marked - that's a statement about it being no more
+unstable than the 0.x baseline itself, not a promise of stability. Use
+`@Experimental` on new public API going forward if you'd want a heads-up
+before depending on it; remove it once something's shipped unchanged for a
+minor version or two.
+
 ## What's not built yet
 
 See `plan.md` for the full roadmap. Notably: nothing is published anywhere
-(Maven Central, npm), so `sugr init` only scaffolds inside this checkout;
-`sugr package` (OS installers) and automated native-image builds inside
-`sugr build` don't exist yet.
+(Maven Central, npm), so `sugr init` only scaffolds inside this checkout,
+and `sugr package`'s macOS (`.dmg`)/Linux (`.deb`) paths follow the same
+shape as the Windows one but haven't been exercised on those OSes yet.
 
 ## Reporting issues
 
