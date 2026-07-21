@@ -15,6 +15,7 @@ repositories {
 
 dependencies {
     implementation("info.picocli:picocli:4.7.6")
+    implementation(project(":bridge"))
     annotationProcessor("info.picocli:picocli-codegen:4.7.6")
 }
 

@@ -44,14 +44,30 @@ compiler step needs `cl.exe`/`link.exe` on PATH, which a plain terminal
 doesn't have - this used to mean manually opening a "Developer Command
 Prompt for VS" before building), then wraps the resulting `.exe` with
 [NSIS](https://nsis.sourceforge.io/) into a proper installer (Start Menu +
-desktop shortcuts, uninstaller). macOS (`.dmg` via `hdiutil`) and Linux
-(`.deb` via `dpkg-deb`) follow the same shape in the code but haven't been
-exercised on those OSes yet.
+desktop shortcuts, uninstaller, and a check that silently installs the
+WebView2 Runtime if the target machine doesn't have it yet). macOS (`.dmg`
+via `hdiutil`) and Linux (`.deb` via `dpkg-deb`) follow the same shape in the
+code but haven't been exercised on those OSes yet.
 
 ```
 sugr package [--name <name>] [--app-version <version>] [--icon <path>]
              [--lib-dir lib] [--dest dist]
 ```
+
+`--name`/`--app-version`/`--icon` default to a `sugr.config.json` in your
+app's root directory (alongside `frontend/` and `lib/`), if present:
+
+```json
+{
+  "name": "my-app",
+  "appVersion": "1.0.0",
+  "icon": "assets/icon.ico"
+}
+```
+
+CLI flags always override the file; both are optional (falls back to
+`sugr-app`/`0.1.0`/no icon). The `react-ts` template ships one with
+`"name"` pre-filled from `sugr init`'s app name.
 
 If your app calls into a native library of its own beyond `core`'s webview
 binding (like `examples/sql-client` does with `libsqlite3`), you'll need to
@@ -67,5 +83,4 @@ needed once you add your own native library.
 
 ## What's not automated yet
 
-- Bundling a WebView2 runtime bootstrapper for Windows 10 machines that don't have it preinstalled
 - Publishing `core`/`bridge`/`processor` to Maven Central or `@sugr/runtime` to npm

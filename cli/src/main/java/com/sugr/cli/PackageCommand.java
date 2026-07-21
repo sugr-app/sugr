@@ -42,13 +42,16 @@ final class PackageCommand implements Callable<Integer> {
             + "(auto-detected by default - see GradleProjectLocator)")
     String gradleDir;
 
-    @Option(names = {"-n", "--name"}, description = "App/installer name", defaultValue = "sugr-app")
+    @Option(names = {"-n", "--name"}, description = "App/installer name "
+            + "(defaults to sugr.config.json's \"name\", or \"sugr-app\")")
     String name;
 
-    @Option(names = {"--app-version"}, description = "App version", defaultValue = "0.1.0")
+    @Option(names = {"--app-version"}, description = "App version "
+            + "(defaults to sugr.config.json's \"appVersion\", or \"0.1.0\")")
     String appVersion;
 
-    @Option(names = {"--icon"}, description = "Path to an icon file (.ico on Windows, .icns on macOS)")
+    @Option(names = {"--icon"}, description = "Path to an icon file, .ico on Windows / .icns on macOS "
+            + "(defaults to sugr.config.json's \"icon\")")
     String iconPath;
 
     @Option(names = {"-d", "--dest"}, description = "Where to write the installer", defaultValue = "dist")
@@ -61,6 +64,11 @@ final class PackageCommand implements Callable<Integer> {
             System.err.println("[sugr] lib directory not found: " + libPath);
             return 1;
         }
+
+        SugrConfig config = SugrConfig.load(Path.of(".").toAbsolutePath().normalize());
+        name = name != null ? name : config.name != null ? config.name : "sugr-app";
+        appVersion = appVersion != null ? appVersion : config.appVersion != null ? config.appVersion : "0.1.0";
+        iconPath = iconPath != null ? iconPath : config.icon;
 
         System.out.println("[sugr] building native-image binary ...");
         int buildExit = runNativeCompile();
