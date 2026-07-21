@@ -61,10 +61,8 @@ const orders = await Backend.ordersFor(user.id)   // CompletableFuture<T> -> Pro
 Supported types (nested where it makes sense): `String`, `int`/`long`/`double`/`boolean`,
 records, `List<T>`, `Map<String,T>`, and `CompletableFuture<T>` as a return type marks
 the binding async. See [`processor`](processor) for how types are matched to codegen,
-and [`examples/sql-client`](examples/sql-client)'s `SqlBridge.java` for a real example
-(plus a documented limitation: completing a `CompletableFuture` from a background
-thread doesn't reliably resolve the JS Promise with the bundled `webview.h` build -
-completing it synchronously works fine).
+and [`examples/sql-client`](examples/sql-client)'s `SqlBridge.java` for a real example,
+including completing a `CompletableFuture` from a background thread.
 
 You can still bind by hand when you need a side effect codegen doesn't know about
 (e.g. emitting an event alongside the response) - both styles compose freely:
@@ -101,7 +99,8 @@ Jackson databind, per plan.md.
 
 See [`examples/sql-client`](examples/sql-client) for a full working app:
 `@Bind`-generated methods, a hand-written one, both directions of the event
-bus, and the `CompletableFuture` caveat above.
+bus, and an async `CompletableFuture` binding completed from a background
+thread.
 
 ## CLI
 

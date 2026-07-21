@@ -111,11 +111,13 @@ Java→JS, driven by `Application.emit()` calling `webview_eval`.
 thread - on macOS specifically the *main* thread). Any native call from a
 different thread has to go through `webview_dispatch`, which schedules a
 callback back onto the UI thread. `Application.emit()` always does this,
-which is why it's safe to call from anywhere. Bind/invoke replies take a
-faster path when they resolve synchronously (the common case), and only fall
-back to `webview_dispatch` for genuinely async replies (see the
-[CompletableFuture caveat](/guide/bind#supported-types) for a case where that
-fallback path doesn't actually work with the current bundled webview.h).
+which is why it's safe to call from anywhere. Bind/invoke replies go through
+the same `UiDispatcher` path (`Application.reply()`), which runs inline if
+already on the UI thread or hops via `webview_dispatch` otherwise - this
+works reliably regardless of which thread completes the bind's
+`CompletableFuture`, since the webview request id is copied to a Java
+`String` synchronously before any async work starts (see `reply()`'s
+javadoc for why that copy matters).
 
 ## No reflection at the bind boundary
 

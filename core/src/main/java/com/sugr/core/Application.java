@@ -161,8 +161,13 @@ public final class Application {
      * The handler may resolve asynchronously (CompletableFuture-backed, e.g. generated
      * by the {@code processor} module) - whichever thread completes it, the reply hops
      * back onto the UI thread via webview_dispatch before calling webview_return.
+     *
+     * <p>{@code seq} is copied to a Java {@code String} immediately, synchronously,
+     * before this method returns - see {@link #reply} for why: the native {@code seq}
+     * pointer is only valid for the duration of this callback.
      */
     private void onInvoke(MemorySegment seq, MemorySegment req, MemorySegment unusedArg) {
+        String seqStr = seq.reinterpret(1 << 20).getString(0);
         String reqJson = req.reinterpret(1 << 20).getString(0);
         bridge.dispatch(reqJson).whenComplete((resultJson, error) -> {
             try {
@@ -177,7 +182,7 @@ public final class Application {
                     finalResult = Json.quote(cause.getMessage() == null ? cause.toString() : cause.getMessage());
                     isError = true;
                 }
-                reply(seq, finalResult, isError);
+                reply(seqStr, finalResult, isError);
             } catch (Throwable t) {
                 // whenComplete() swallows exceptions thrown here - log so async failures are visible.
                 System.err.println("[sugr] onInvoke whenComplete failed:");
@@ -187,22 +192,26 @@ public final class Application {
     }
 
     /**
-     * Calls webview_return via {@link UiDispatcher}. If already on the UI thread
-     * (the common case - sync handlers complete their future inline, inside the
-     * onInvoke upcall), that runs immediately - this is the only path confirmed
-     * to work reliably (see SqlBridge.slowGreet's javadoc in examples/sql-client
-     * for why: replying later than the original bind callback's synchronous call
-     * stack, even from the UI thread, does not reliably resolve the JS Promise
-     * with the bundled webview.h build). The cross-thread dispatch path still
-     * hops threads correctly, it's specifically webview_return afterwards that
-     * the native side doesn't seem to honor.
+     * Calls webview_return via {@link UiDispatcher}, re-allocating a native buffer for
+     * {@code seq} from the Java copy captured in {@link #onInvoke}. This used to take
+     * the raw {@code MemorySegment} straight from the invoke upcall and hold onto it
+     * across the async completion - which corrupted replies for genuinely async
+     * handlers, because webview's C API only guarantees {@code seq}'s underlying
+     * {@code std::string} (see webview/webview's {@code c_api_impl.hh}: {@code
+     * fn(seq.c_str(), req.c_str(), arg_)}) lives for the duration of the synchronous
+     * callback, not beyond it - exactly the "copy the id before using it later" pattern
+     * webview's own async example (examples/bind.c's {@code compute}) follows. Passing
+     * a stale segment here didn't throw; it silently wrote through a dangling pointer,
+     * which is why the JS Promise never resolved. Reallocating from the Java-owned
+     * copy fixes it regardless of which thread completes the future.
      */
-    private void reply(MemorySegment seq, String resultJson, boolean isError) {
+    private void reply(String seq, String resultJson, boolean isError) {
         try {
             uiDispatcher.runOnUiThread(() -> {
                 try {
+                    MemorySegment seqNative = arena.allocateFrom(seq);
                     MemorySegment resultNative = arena.allocateFrom(resultJson);
-                    webviewReturn.invoke(handle, seq, isError ? 1 : 0, resultNative);
+                    webviewReturn.invoke(handle, seqNative, isError ? 1 : 0, resultNative);
                 } catch (Throwable t) {
                     System.err.println("[sugr] webview_return failed:");
                     t.printStackTrace();

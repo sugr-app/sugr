@@ -63,15 +63,12 @@ changes.
 | `Map<String, T>` | `Record<string, T>` |
 | `CompletableFuture<T>` as a return type | marks the binding async - `Promise<T>` |
 
-::: warning CompletableFuture caveat
-Resolving the future *synchronously* (e.g. `CompletableFuture.completedFuture(...)`,
-or work that completes before the method returns) works reliably. Completing
-it later - from a background thread, or even the same thread after the
-original call has returned - doesn't reliably resolve the JS Promise with
-the bundled `webview.h` build. See `examples/sql-client`'s `SqlBridge.slowGreet`
-and `core`'s `Application.reply()` for the investigation. Worth revisiting
-with a newer webview.h build.
-:::
+Completing the future from a background thread works reliably - `core`'s
+`Application` copies the webview request id to a Java `String` synchronously,
+inside the invoke callback, before any async work happens (the native id
+pointer is only valid for that callback's duration - see `Application.reply()`'s
+javadoc). See `examples/sql-client`'s `SqlBridge.slowGreet` for a real
+background-thread example.
 
 ## Hand-written binds
 

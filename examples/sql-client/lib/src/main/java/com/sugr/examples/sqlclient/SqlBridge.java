@@ -75,22 +75,23 @@ final class SqlBridge implements AutoCloseable {
 
     /**
      * Demo of @Bind's CompletableFuture<T> support (Milestone 3.1) - the processor
-     * generates .thenApply(...) + bindAsync() correctly for this return type.
-     *
-     * KNOWN LIMITATION: completing the future later (a real background thread, or
-     * even a same-thread deferred callback) does not work with the bundled
-     * webview.h build - webview_return succeeds with no Java-side error, but the
-     * JS Promise never settles. Confirmed by isolating the variable: completing
-     * synchronously (as below) works every time; completing via Thread.ofVirtual()
-     * + webview_dispatch never does. Looks like the request id ("seq") webview_bind
-     * hands out is only valid within the original synchronous callback's native
-     * call stack, not after it returns - see core/Application.java's `reply()` for
-     * where the cross-thread path is implemented (works structurally, just doesn't
-     * make the native side happy). Worth revisiting with a newer webview.h build.
+     * generates .thenApply(...) + bindAsync() correctly for this return type, and
+     * genuinely completing from a background thread (as here, after a simulated
+     * delay) resolves the JS Promise correctly - see core/Application.java's
+     * {@code onInvoke}/{@code reply} javadoc for the fix that made this reliable
+     * (the webview request id has to be copied to a Java String synchronously,
+     * since the native pointer only lives for the duration of the invoke callback).
      */
     @Bind
     CompletableFuture<String> slowGreet(String name) {
-        return CompletableFuture.completedFuture("Hello, " + name + "!");
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return "Hello, " + name + "!";
+        });
     }
 
     List<Map<String, String>> query(String sql) throws Throwable {
