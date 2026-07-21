@@ -1,0 +1,55 @@
+name: Bug report
+description: Something doesn't work the way it should
+labels: [bug]
+body:
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      description: Which part of sugr is affected?
+      options:
+        - core
+        - bridge
+        - processor (@Bind)
+        - cli (sugr command)
+        - runtime-js (@sugr/runtime)
+        - templates/react-ts
+        - examples/sql-client
+        - docs
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. sugr init my-app
+        2. cd examples/my-app && sugr dev
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "sugr doctor output"
+      description: Paste the full output - this project leans on native toolchains (GraalVM, native-image, WebView2), so environment details matter more than usual.
+      render: text
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Windows 11 / macOS 15 / Ubuntu 24.04"
+    validations:
+      required: true

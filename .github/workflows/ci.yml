@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          components: 'native-image'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - name: Install JS dependencies
+        run: pnpm install
+
+      - name: Build the sql-client example frontend
+        run: pnpm build
+        working-directory: examples/sql-client/frontend
+
+      - name: Embed the built frontend into resources
+        shell: bash
+        run: |
+          rm -rf examples/sql-client/lib/src/main/resources/frontend
+          mkdir -p examples/sql-client/lib/src/main/resources/frontend
+          cp -r examples/sql-client/frontend/dist/* examples/sql-client/lib/src/main/resources/frontend/
+
+      - name: Build and test (core, bridge, processor, cli, examples/sql-client)
+        run: ./gradlew build --console=plain
+
+      # Only the cli module is verified cross-platform for now - core/bridge bundle a
+      # Windows-only webview.dll (see core/src/main/resources/native), so a real
+      # sql-client native-image build only works on Windows until macOS/Linux
+      # webview binaries are added (see plan.md Giai đoạn 4).
+      - name: Set up MSVC (Windows only, needed by native-image)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build the sugr CLI as a native binary
+        run: ./gradlew :cli:nativeCompile --console=plain
+
+      - name: Upload the native CLI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sugr-cli-${{ matrix.os }}
+          path: |
+            cli/build/native/nativeCompile/sugr
+            cli/build/native/nativeCompile/sugr.exe
+          if-no-files-found: ignore

@@ -1,0 +1,1 @@
+Sugar for your cup of Java — build lightweight desktop apps with Java and web technologies.

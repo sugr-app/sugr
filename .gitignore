@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+
+# Native image / build outputs at repo root and example roots
+*.exe
+*.dll
+!**/src/main/resources/**/*.dll
+
+# Node / pnpm
+node_modules/
+dist/
+.vitepress/cache/
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

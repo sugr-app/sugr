@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest something sugr doesn't do yet
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The underlying problem, not just the feature - there may already be a way, or plan.md may already cover it for a later milestone.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: false
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      options:
+        - core
+        - bridge
+        - processor (@Bind)
+        - cli (sugr command)
+        - runtime-js (@sugr/runtime)
+        - templates/react-ts
+        - docs
+        - not sure / new
+    validations:
+      required: true
