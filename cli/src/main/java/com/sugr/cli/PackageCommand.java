@@ -177,10 +177,21 @@ final class PackageCommand implements Callable<Integer> {
         return Files.isRegularFile(fallback) ? fallback : null;
     }
 
+    // Registry key the WebView2 Runtime registers when installed - same key
+    // DoctorCommand checks for. Evergreen bootstrapper link is Microsoft's
+    // stable, permanent redirect (documented at
+    // https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution#evergreen-bootstrapper) -
+    // ~2MB, downloads the real runtime itself, so nothing large gets bundled.
+    private static final String WEBVIEW2_REG_KEY =
+            "SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+    private static final String WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+
     private String nsisScript(Path stagingExe, Path dest) {
         String iconLine = iconPath != null ? "Icon \"" + Path.of(iconPath).toAbsolutePath() + "\"" : "";
         String outFile = dest.resolve(name + "-" + appVersion + "-Setup.exe").toString();
         return """
+                !include "LogicLib.nsh"
+
                 Name "%s"
                 OutFile "%s"
                 InstallDir "$PROGRAMFILES64\\%s"
@@ -193,6 +204,19 @@ final class PackageCommand implements Callable<Integer> {
                 UninstPage instfiles
 
                 Section "Install"
+                    ReadRegStr $0 HKLM "%s" "pv"
+                    ${If} $0 == ""
+                        DetailPrint "WebView2 Runtime not found - downloading bootstrapper..."
+                        NSISdl::download "%s" "$TEMP\\MicrosoftEdgeWebview2Setup.exe"
+                        Pop $1
+                        ${If} $1 == "success"
+                            ExecWait '"$TEMP\\MicrosoftEdgeWebview2Setup.exe" /silent /install'
+                            Delete "$TEMP\\MicrosoftEdgeWebview2Setup.exe"
+                        ${Else}
+                            MessageBox MB_OK "Couldn't download the WebView2 Runtime installer ($1). Install it manually from https://developer.microsoft.com/microsoft-edge/webview2/ before running %s."
+                        ${EndIf}
+                    ${EndIf}
+
                     SetOutPath "$INSTDIR"
                     File "%s"
                     CreateDirectory "$SMPROGRAMS\\%s"
@@ -211,6 +235,7 @@ final class PackageCommand implements Callable<Integer> {
                 SectionEnd
                 """.formatted(
                 name, outFile, name, iconLine,
+                WEBVIEW2_REG_KEY, WEBVIEW2_BOOTSTRAPPER_URL, name,
                 stagingExe, name, name, name, name, name, name,
                 name, name, name, name, name);
     }

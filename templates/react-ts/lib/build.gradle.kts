@@ -24,6 +24,15 @@ graalvmNative {
         named("main") {
             imageName.set("__APP_NAME__")
             buildArgs.add("--enable-native-access=ALL-UNNAMED")
+            // native-image defaults to the console subsystem on Windows, which pops
+            // up a cmd window alongside the app's own GUI window - these two linker
+            // flags switch it to the Windows GUI subsystem instead (ENTRY is needed
+            // because /SUBSYSTEM:WINDOWS otherwise expects a WinMain entry point,
+            // not the standard main() native-image generates).
+            if (System.getProperty("os.name").lowercase().contains("windows")) {
+                buildArgs.add("-H:NativeLinkerOption=/SUBSYSTEM:WINDOWS")
+                buildArgs.add("-H:NativeLinkerOption=/ENTRY:mainCRTStartup")
+            }
         }
     }
 }
