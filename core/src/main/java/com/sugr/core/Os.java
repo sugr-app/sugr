@@ -1,6 +1,6 @@
 package com.sugr.core;
 
-/** Tiny OS-detection helper shared by {@link Dialogs} and {@link Clipboard}. */
+/** Tiny OS-detection/scripting helpers shared by {@link Dialogs}, {@link Clipboard}, and {@link Tray}. */
 final class Os {
 
     private Os() {
@@ -12,5 +12,10 @@ final class Os {
 
     static boolean isMac() {
         return System.getProperty("os.name", "").toLowerCase().contains("mac");
+    }
+
+    /** Wraps a string as a single-quoted PowerShell literal (only ' needs escaping - doubled). */
+    static String psQuote(String s) {
+        return "'" + s.replace("'", "''") + "'";
     }
 }

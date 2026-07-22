@@ -13,6 +13,7 @@ declare global {
     emit(event: string, payloadJson: string): Promise<unknown>
     __sugrEvents__: {
       on(name: string, cb: (payload: unknown) => void): void
+      off(name: string, cb: (payload: unknown) => void): void
     }
   }
 }
@@ -44,11 +45,19 @@ export async function invoke<T = unknown>(method: string, args: unknown[] = []):
 /**
  * Two-way event bus. `on()` receives events pushed from Java via
  * `Application.emit()`. `emit()` sends an event to Java-side listeners
- * registered via `Application.builder().on(event, ...)`.
+ * registered via `Application.builder().on(event, ...)`. Always pair `on()`
+ * with `off()` in a `useEffect` cleanup (or equivalent) - without it, a
+ * component that mounts more than once (e.g. React StrictMode's intentional
+ * double-invoke in development) registers the same listener repeatedly, and
+ * every event fires it once per registration.
  */
 export const events = {
   on<T = unknown>(name: string, listener: (payload: T) => void): void {
     window.__sugrEvents__.on(name, listener as (payload: unknown) => void)
+  },
+
+  off<T = unknown>(name: string, listener: (payload: T) => void): void {
+    window.__sugrEvents__.off(name, listener as (payload: unknown) => void)
   },
 
   emit(name: string, payload?: unknown): void {

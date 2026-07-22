@@ -21,12 +21,29 @@ function App() {
   const [greeting, setGreeting] = useState<string | null>(null)
   const [dbPath, setDbPath] = useState<string | null>(null)
   const [clipboardText, setClipboardText] = useState('hello from sugr')
+  const [trayClicks, setTrayClicks] = useState(0)
 
   useEffect(() => {
+    // Cleanup (returned below) matters here specifically because of React
+    // StrictMode's intentional double-invoke of effects in development -
+    // without unregistering, each listener gets registered twice and every
+    // event fires its handler twice.
+    const onQueryExecuted = (payload: string) => setLastEvent(payload)
+    const onPong = (payload: string) => setPong(payload)
+    const onTrayShowClicked = () => setTrayClicks((n) => n + 1)
+
     // Java -> JS: Main.java emits this after every successful query.
-    events.on<string>('query-executed', (payload) => setLastEvent(payload))
+    events.on<string>('query-executed', onQueryExecuted)
     // Java -> JS: reply to the "ping" event emitted below.
-    events.on<string>('pong', (payload) => setPong(payload))
+    events.on<string>('pong', onPong)
+    // Java -> JS: the system tray's "Show main window" item (Phase 4d) emits this.
+    events.on('tray-show-clicked', onTrayShowClicked)
+
+    return () => {
+      events.off('query-executed', onQueryExecuted)
+      events.off('pong', onPong)
+      events.off('tray-show-clicked', onTrayShowClicked)
+    }
   }, [])
 
   async function handleConnect() {
@@ -124,6 +141,10 @@ function App() {
       <h1>sugr - SQL client (@Bind codegen demo)</h1>
       <p>Status: {status}</p>
       {lastEvent && <p>Last event from Java: {lastEvent}</p>}
+      <p style={{ color: '#666', fontSize: '0.9em' }}>
+        Check the window's native menu bar (File/Help) and the system tray icon
+        (right-click it for "Show main window"/"Quit"). Tray "Show main window" clicked: {trayClicks}
+      </p>
 
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         <button type="button" onClick={handleConnect}>Connect (:memory:)</button>

@@ -101,6 +101,53 @@ window's cleanup) run on a later tick of the shared message loop instead,
 never nested inside another window's dispatch. See `WindowNative`'s source
 for the full mechanism.
 
+## Native menu bar & system tray (v0.4)
+
+```java
+Menu appMenu = new Menu()
+    .submenu("File", new Menu()
+        .item("Quit", () -> System.exit(0)))
+    .submenu("Help", new Menu()
+        .item("About", () -> Dialogs.showMessage("About", "My App")));
+
+Application.builder()
+    .title("My App")
+    .menu(appMenu)
+    .onReady(app -> {
+        Menu trayMenu = new Menu()
+            .item("Show main window", () -> app.mainWindow().emit("tray-show-clicked", "null"))
+            .separator()
+            .item("Quit", () -> System.exit(0));
+        Tray tray = Tray.create("assets/icon.ico", "My App", trayMenu);
+        if (tray != null) {
+            Runtime.getRuntime().addShutdownHook(new Thread(tray::close));
+        }
+    })
+    .run();
+```
+
+`Menu` builds a tree of `item`/`submenu`/`separator` entries, shared by both
+a window's menu bar (`Window.Builder.menu()` / `Application.Builder.menu()`)
+and `Tray.create()`'s right-click context menu.
+
+::: warning Windows only, and no nested submenus in the tray menu
+Both are no-ops (`Tray.create` returns `null`) elsewhere for now. The tray's
+context menu only supports flat items and separators - a `Menu.Submenu`
+passed to `Tray.create` is skipped with a warning; the window menu bar
+supports full nesting.
+
+The menu bar is bound directly via `user32.dll` (`CreateMenu`/`AppendMenu`/
+`SetMenu`, the same FFM pattern as everything else in `WindowNative`).
+`Tray` instead hosts a small persistent PowerShell + `NotifyIcon` process -
+its native struct (`NOTIFYICONDATAW`) was judged too failure-prone to
+hand-lay-out via FFM without extensive live byte-offset testing, the same
+call made for `Dialogs`' `OPENFILENAMEW` (see [Native APIs](/guide/native)).
+
+`Tray.close()` kills that hosting process outright rather than asking it to
+dispose the icon first - Explorer usually clears the resulting "ghost" icon
+on its next redraw/hover. Harmless, just not instant.
+:::
+
 ## Frontend sources
 
 `Frontend` is a sealed type with two variants:

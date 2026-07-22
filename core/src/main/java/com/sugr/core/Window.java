@@ -51,6 +51,10 @@ public final class Window {
                 const listeners = {};
                 return {
                     on(name, cb) { (listeners[name] ||= []).push(cb); },
+                    off(name, cb) {
+                        if (!listeners[name]) return;
+                        listeners[name] = listeners[name].filter((registered) => registered !== cb);
+                    },
                     dispatch(name, payload) { (listeners[name] || []).forEach((cb) => cb(payload)); }
                 };
             })();
@@ -90,6 +94,7 @@ public final class Window {
     private final boolean resizable;
     private final boolean alwaysOnTop;
     private final String iconPath;
+    private final Menu menu;
     private final Frontend frontend;
     private final Bridge bridge;
     private final EventBus eventBus;
@@ -129,6 +134,7 @@ public final class Window {
         this.resizable = builder.resizable;
         this.alwaysOnTop = builder.alwaysOnTop;
         this.iconPath = builder.iconPath;
+        this.menu = builder.menu;
         this.frontend = builder.frontend;
         this.bridge = builder.bridge;
         this.eventBus = builder.eventBus;
@@ -278,6 +284,10 @@ public final class Window {
         }
         if (alwaysOnTop) {
             WindowNative.setAlwaysOnTop(nativeWindow, true);
+        }
+        if (menu != null) {
+            MemorySegment nativeMenu = WindowNative.buildNativeMenu(menu, true);
+            WindowNative.setWindowMenu(nativeWindow, nativeMenu);
         }
     }
 
@@ -447,6 +457,7 @@ public final class Window {
         private boolean resizable = true;
         private boolean alwaysOnTop = false;
         private String iconPath;
+        private Menu menu;
         private Frontend frontend = Frontend.embedded("/frontend");
         private final Bridge bridge = new Bridge();
         private final EventBus eventBus = new EventBus();
@@ -499,6 +510,12 @@ public final class Window {
         /** Path to an icon file (.ico on Windows). Windows only for now - a no-op elsewhere. */
         public Builder icon(String iconPath) {
             this.iconPath = iconPath;
+            return this;
+        }
+
+        /** Sets this window's native menu bar. Windows only for now - a no-op elsewhere. */
+        public Builder menu(Menu menu) {
+            this.menu = menu;
             return this;
         }
 

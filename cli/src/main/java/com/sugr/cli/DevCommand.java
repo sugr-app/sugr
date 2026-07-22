@@ -113,8 +113,14 @@ final class DevCommand implements Callable<Integer> {
         // killTree above) instead of being forked by the long-lived Gradle Daemon, which
         // isn't part of our process tree and survives a plain destroyForcibly() - that's
         // what left orphaned app windows behind before this fix.
+        // --rerun-tasks: a plain JavaExec `run` task has no declared outputs, so it should
+        // never be considered up-to-date - but empirically, re-invoking the exact same
+        // task/args/classpath across separate `gradle` process launches (as every restart
+        // here does) sometimes gets treated as up-to-date anyway and silently skips
+        // actually launching the app. Forcing a rerun is the only way to guarantee restart
+        // always really restarts, which matters a lot more here than the extra checks cost.
         ProcessBuilder appPb = new ProcessBuilder(
-                ProcessUtil.shellCommand("gradle", located.task(), "--console=plain", "--no-daemon"));
+                ProcessUtil.shellCommand("gradle", located.task(), "--console=plain", "--no-daemon", "--rerun-tasks"));
         appPb.directory(located.gradleDir().toFile());
         appPb.environment().put("SUGR_DEV_URL", devUrl);
         appPb.redirectErrorStream(true);

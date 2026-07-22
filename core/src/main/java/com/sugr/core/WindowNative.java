@@ -59,6 +59,7 @@ final class WindowNative {
     private static final int WM_SIZE = 0x0005;
     private static final int WM_SETFOCUS = 0x0007;
     private static final int WM_KILLFOCUS = 0x0008;
+    private static final int WM_COMMAND = 0x0111;
     private static final int WM_APP = 0x8000;
     private static final int WM_SUGR_DEFERRED = WM_APP + 1;
     private static final int WM_SETICON = 0x0080;
@@ -70,11 +71,17 @@ final class WindowNative {
     private static final long HWND_NOTOPMOST = -2L;
     private static final int SWP_NOMOVE = 0x0002;
     private static final int SWP_NOSIZE = 0x0004;
+    private static final int MF_STRING = 0x00000000;
+    private static final int MF_SEPARATOR = 0x00000800;
+    private static final int MF_POPUP = 0x00000010;
 
     private static final Arena ARENA = Arena.ofShared();
     private static final Map<Long, Window> HWND_TO_WINDOW = new ConcurrentHashMap<>();
     private static final Map<Long, Long> ORIGINAL_WNDPROC = new ConcurrentHashMap<>();
     private static final Queue<Runnable> PENDING_WORK = new ConcurrentLinkedQueue<>();
+    private static final Map<Integer, Runnable> MENU_ITEM_ACTIONS = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicInteger NEXT_MENU_ITEM_ID =
+            new java.util.concurrent.atomic.AtomicInteger(1000);
 
     /** The first window ever subclassed - stays alive for the app's whole lifetime, used as a deferred-work target. */
     private static volatile MemorySegment driverHwnd;
@@ -89,6 +96,10 @@ final class WindowNative {
     private static final MethodHandle SEND_MESSAGE;
     private static final MethodHandle POST_MESSAGE;
     private static final MethodHandle SHOW_WINDOW;
+    private static final MethodHandle CREATE_MENU;
+    private static final MethodHandle CREATE_POPUP_MENU;
+    private static final MethodHandle APPEND_MENU;
+    private static final MethodHandle SET_MENU;
     private static MemorySegment subclassTrampoline;
 
     static {
@@ -116,6 +127,13 @@ final class WindowNative {
                             ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG));
             SHOW_WINDOW = downcall("ShowWindow",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+            CREATE_MENU = downcall("CreateMenu", FunctionDescriptor.of(ValueLayout.ADDRESS));
+            CREATE_POPUP_MENU = downcall("CreatePopupMenu", FunctionDescriptor.of(ValueLayout.ADDRESS));
+            APPEND_MENU = downcall("AppendMenuW",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+            SET_MENU = downcall("SetMenu",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         } else {
             LINKER = null;
             USER32 = null;
@@ -127,6 +145,10 @@ final class WindowNative {
             SEND_MESSAGE = null;
             POST_MESSAGE = null;
             SHOW_WINDOW = null;
+            CREATE_MENU = null;
+            CREATE_POPUP_MENU = null;
+            APPEND_MENU = null;
+            SET_MENU = null;
         }
     }
 
@@ -173,6 +195,43 @@ final class WindowNative {
             return;
         }
         SHOW_WINDOW.invoke(hwnd, SW_HIDE);
+    }
+
+    /** Builds a native HMENU tree from {@code menu}, registering each item's action for WM_COMMAND dispatch. */
+    static MemorySegment buildNativeMenu(Menu menu, boolean isRoot) throws Throwable {
+        if (!Os.isWindows()) {
+            return null;
+        }
+        MemorySegment hMenu = (MemorySegment) (isRoot ? CREATE_MENU.invoke() : CREATE_POPUP_MENU.invoke());
+        for (Menu.Entry entry : menu.entries()) {
+            switch (entry) {
+                case Menu.Item item -> {
+                    int id = NEXT_MENU_ITEM_ID.getAndIncrement();
+                    MENU_ITEM_ACTIONS.put(id, item.action());
+                    MemorySegment label = ARENA.allocateFrom(item.label(), StandardCharsets.UTF_16LE);
+                    APPEND_MENU.invoke(hMenu, MF_STRING, (long) id, label);
+                }
+                case Menu.Submenu submenu -> {
+                    MemorySegment hSubMenu = buildNativeMenu(submenu.menu(), false);
+                    MemorySegment label = ARENA.allocateFrom(submenu.label(), StandardCharsets.UTF_16LE);
+                    APPEND_MENU.invoke(hMenu, MF_POPUP, hSubMenu.address(), label);
+                }
+                case Menu.Separator ignored -> APPEND_MENU.invoke(hMenu, MF_SEPARATOR, 0L, MemorySegment.NULL);
+            }
+        }
+        return hMenu;
+    }
+
+    static void setWindowMenu(MemorySegment hwnd, MemorySegment hMenu) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        SET_MENU.invoke(hwnd, hMenu);
+    }
+
+    /** Looked up by {@code onWndProc}'s WM_COMMAND case; also used by {@link Tray} for its context menu. */
+    static Runnable menuItemAction(int id) {
+        return MENU_ITEM_ACTIONS.get(id);
     }
 
     static void show(MemorySegment hwnd) throws Throwable {
@@ -259,6 +318,19 @@ final class WindowNative {
                 }
                 case WM_KILLFOCUS -> {
                     window.fireFocusChanged(false);
+                    return callOriginal(originalProc, hwnd, msg, wParam, lParam);
+                }
+                case WM_COMMAND -> {
+                    int menuItemId = (int) (wParam & 0xFFFF);
+                    Runnable action = menuItemAction(menuItemId);
+                    if (action != null) {
+                        try {
+                            action.run();
+                        } catch (Throwable t) {
+                            System.err.println("[sugr] menu item action failed:");
+                            t.printStackTrace();
+                        }
+                    }
                     return callOriginal(originalProc, hwnd, msg, wParam, lParam);
                 }
                 case WM_SUGR_DEFERRED -> {

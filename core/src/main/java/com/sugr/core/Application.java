@@ -140,6 +140,12 @@ public final class Application {
             return this;
         }
 
+        /** Sets the main window's native menu bar. Windows only for now - a no-op elsewhere. */
+        public Builder menu(Menu menu) {
+            windowBuilder.menu(menu);
+            return this;
+        }
+
         public Builder frontend(Frontend frontend) {
             windowBuilder.frontend(frontend);
             return this;

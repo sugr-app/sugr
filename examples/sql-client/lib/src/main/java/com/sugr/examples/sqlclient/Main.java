@@ -4,6 +4,8 @@ import com.sugr.bridge.Json;
 import com.sugr.core.Application;
 import com.sugr.core.Dialogs;
 import com.sugr.core.Frontend;
+import com.sugr.core.Menu;
+import com.sugr.core.Tray;
 import com.sugr.core.Window;
 
 import java.util.List;
@@ -26,9 +28,17 @@ public final class Main {
         // only exists once the builder finishes - stash it via onReady().
         AtomicReference<Application> appRef = new AtomicReference<>();
 
+        // Demo of Menu (Phase 4d) - a window menu bar attached via Application.Builder.menu().
+        Menu appMenu = new Menu()
+                .submenu("File", new Menu()
+                        .item("Quit", () -> System.exit(0)))
+                .submenu("Help", new Menu()
+                        .item("About", () -> Dialogs.showMessage("About", "sugr - SQL client demo app")));
+
         Application.Builder builder = Application.builder()
                 .title("sugr - SQL client")
                 .size(1000, 700)
+                .menu(appMenu)
                 .frontend(devServerUrlFromEnv() != null
                         ? Frontend.devServer(devServerUrlFromEnv())
                         : Frontend.embedded("/frontend"))
@@ -73,7 +83,19 @@ public final class Main {
                 .onFocus(window -> System.out.println("[sugr] window focused: " + window))
                 .onBlur(window -> System.out.println("[sugr] window blurred: " + window))
                 .onResize((window, w, h) -> System.out.println("[sugr] window resized: " + w + "x" + h))
-                .onReady(appRef::set);
+                .onReady(app -> {
+                    appRef.set(app);
+                    // Demo of Tray (Phase 4d) - a system tray icon with a context menu,
+                    // hosted via a PowerShell + NotifyIcon process (see Tray's javadoc).
+                    Menu trayMenu = new Menu()
+                            .item("Show main window", () -> app.mainWindow().emit("tray-show-clicked", "null"))
+                            .separator()
+                            .item("Quit", () -> System.exit(0));
+                    Tray tray = Tray.create(null, "sugr - SQL client", trayMenu);
+                    if (tray != null) {
+                        Runtime.getRuntime().addShutdownHook(new Thread(tray::close));
+                    }
+                });
 
         generatedBridge.bindTo(builder);
         builder.run();
