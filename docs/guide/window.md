@@ -79,6 +79,18 @@ new Window.Builder()
 only for now; elsewhere these callbacks never fire and closing can't be
 vetoed.
 
+### Reloading
+
+```java
+window.reload()
+```
+
+Re-navigates to the same URL the window was created with - like a browser
+refresh. Only the page reloads (all JS state is lost, same as any page
+reload); Java-side state (a DB connection, a long-lived service instance,
+...) is untouched. Handy for a menu bar's "Reload" item - `app.mainWindow()`
+returns the `Window` to call it on.
+
 ::: warning Known limitation: secondary windows may briefly flicker on open
 A window opened via `openWindow` can render with WebView2's control briefly
 undersized before snapping to the right size, because WebView2's rendering is
@@ -150,15 +162,14 @@ on its next redraw/hover. Harmless, just not instant.
 
 ## Frontend sources
 
-`Frontend` is a sealed type with two variants:
+`Frontend` is a sealed type with two variants, plus one convenience factory:
 
 ```java
 Frontend.devServer("http://localhost:5173")
 ```
 Points the webview straight at a running Vite dev server. You get real HMR:
 edit a `.tsx` file, see it update without a reload. This is what `sugr dev`
-uses automatically (it sets the `SUGR_DEV_URL` environment variable, and a
-generated app's `Main.java` reads it - see the template's `Main.java`).
+uses automatically (it sets the `SUGR_DEV_URL` environment variable).
 
 ```java
 Frontend.embedded("/frontend")
@@ -174,15 +185,23 @@ tighter CSP is planned for a later milestone (v0.5). A loopback-only HTTP
 server is a reasonable interim tradeoff.
 :::
 
-## Picking a source based on environment
+```java
+Frontend.auto()
+```
+Picks `devServer` if `SUGR_DEV_URL` is set (as `sugr dev` sets it), otherwise
+`embedded("/frontend")` - `"/frontend"` is the resource root every `sugr
+build`/`sugr init` app uses unless reconfigured, so the no-arg form is a
+fixed framework convention, not something each `Main.java` should restate.
+This is what `Main.java` should call in practice. Pass an explicit resource
+root (`Frontend.auto("/other-path")`) only if `sugr build -r` was given a
+different one.
 
-The common pattern (see `examples/sql-client/lib/.../Main.java`):
-
+::: warning Deprecated: hand-rolling the `SUGR_DEV_URL` check yourself
 ```java
 .frontend(System.getenv("SUGR_DEV_URL") != null
     ? Frontend.devServer(System.getenv("SUGR_DEV_URL"))
     : Frontend.embedded("/frontend"))
 ```
-
-`sugr dev` sets `SUGR_DEV_URL`; a plain `gradle run` (or the packaged binary)
-won't have it set, so it falls back to the embedded, production path.
+Still works (it's exactly what `Frontend.auto()` does internally), but
+prefer `Frontend.auto()` in new code.
+:::

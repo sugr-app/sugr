@@ -117,6 +117,8 @@ public final class Window {
     private MethodHandle webviewGetWindow;
     private UiDispatcher uiDispatcher;
     private AssetServer assetServer;
+    private String targetUrl;
+    private long nativeWindowHandle;
     private final boolean isMain;
     private volatile boolean webviewReady = false;
 
@@ -152,6 +154,15 @@ public final class Window {
         return window;
     }
 
+    /**
+     * The OS's native handle for this window (an {@code HWND} on Windows, 0 elsewhere for
+     * now). Useful as the "owner" for a native dialog (see {@link Dialogs}) so it's grouped
+     * with this window in the taskbar/Alt-Tab instead of appearing as an unrelated window.
+     */
+    public long nativeHandle() {
+        return nativeWindowHandle;
+    }
+
     /** Sends an event to this window's JS listeners. Safe to call from any thread. */
     public void emit(String event, String payloadJson) {
         try {
@@ -159,6 +170,25 @@ public final class Window {
                 String js = "window.__sugrEvents__.dispatch(" + Json.quote(event) + "," + payloadJson + ")";
                 try {
                     webviewEval.invoke(handle, arena.allocateFrom(js));
+                } catch (Throwable t) {
+                    throw new RuntimeException(t);
+                }
+            });
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    /**
+     * Reloads this window's frontend (like a browser refresh) - re-navigates to the same
+     * URL, re-running the page's JS from scratch. Java-side state (e.g. an open DB
+     * connection held by the app's own bridge target) is untouched - only the page reloads.
+     */
+    public void reload() {
+        try {
+            uiDispatcher.runOnUiThread(() -> {
+                try {
+                    webviewNavigate.invoke(handle, arena.allocateFrom(targetUrl));
                 } catch (Throwable t) {
                     throw new RuntimeException(t);
                 }
@@ -222,9 +252,10 @@ public final class Window {
         webviewBind.invoke(handle, arena.allocateFrom("emit"), emitStub, MemorySegment.NULL);
 
         MemorySegment nativeWindow = (MemorySegment) webviewGetWindow.invoke(handle);
+        nativeWindowHandle = nativeWindow.address();
         WindowNative.installSubclass(this, nativeWindow);
 
-        String targetUrl = switch (frontend) {
+        targetUrl = switch (frontend) {
             case Frontend.DevServer dev -> dev.url();
             case Frontend.Embedded embedded -> {
                 assetServer = new AssetServer(embedded.resourceRoot());

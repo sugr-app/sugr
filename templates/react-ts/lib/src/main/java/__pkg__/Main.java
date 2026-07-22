@@ -17,16 +17,9 @@ public final class Main {
         Application.Builder builder = Application.builder()
                 .title("__APP_NAME__")
                 .size(900, 640)
-                .frontend(devServerUrlFromEnv() != null
-                        ? Frontend.devServer(devServerUrlFromEnv())
-                        : Frontend.embedded("/frontend"));
+                .frontend(Frontend.auto());
 
         generatedBridge.bindTo(builder);
         builder.run();
-    }
-
-    private static String devServerUrlFromEnv() {
-        String url = System.getenv("SUGR_DEV_URL");
-        return (url == null || url.isBlank()) ? null : url;
     }
 }
