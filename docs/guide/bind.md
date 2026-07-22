@@ -67,14 +67,13 @@ Completing the future from a background thread works reliably - `core`'s
 `Application` copies the webview request id to a Java `String` synchronously,
 inside the invoke callback, before any async work happens (the native id
 pointer is only valid for that callback's duration - see `Application.reply()`'s
-javadoc). See `examples/sql-client`'s `SqlBridge.slowGreet` for a real
-background-thread example.
+javadoc).
 
 ## Hand-written binds
 
-Use `Application.Builder.bind()` directly when you need something codegen
-doesn't know how to express - most commonly, a side effect alongside the
-response (like emitting an event):
+Use `Application.Builder.bind()`/`bindAsync()` directly when you need
+something codegen doesn't know how to express - most commonly, a side effect
+alongside the response (like emitting an event to other listeners):
 
 ```java
 .bind("query", params -> {
@@ -87,5 +86,4 @@ response (like emitting an event):
 
 The handler receives the raw JSON params array as a string, and must return
 a raw JSON result string - `bridge.Json` is the parse/encode helper (no
-Jackson databind, per design). See `examples/sql-client`'s `Main.java` for a
-complete example that mixes both styles.
+Jackson databind, per design).

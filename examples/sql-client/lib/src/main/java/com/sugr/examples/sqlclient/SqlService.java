@@ -18,14 +18,13 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Reusable FFM binding for libsqlite3, kept open across many query() calls.
  * App-specific (not part of the sugr core/bridge library - a real app would
  * bring its own data layer the same way).
  */
-final class SqlBridge implements AutoCloseable {
+final class SqlService implements AutoCloseable {
 
     private final Arena arena = Arena.ofShared();
     private final MethodHandle sqlite3_open;
@@ -37,8 +36,8 @@ final class SqlBridge implements AutoCloseable {
     private MemorySegment db = MemorySegment.NULL;
     private List<Map<String, String>> lastRows;
 
-    SqlBridge() throws Throwable {
-        Path dllPath = NativeLibrary.extractToTempFile(SqlBridge.class, "/native/sqlite3.dll", "sqlite3", ".dll");
+    SqlService() throws Throwable {
+        Path dllPath = NativeLibrary.extractToTempFile(SqlService.class, "/native/sqlite3.dll", "sqlite3", ".dll");
         NativeLibrary sqlite = new NativeLibrary(dllPath, arena);
 
         sqlite3_open = sqlite.downcall("sqlite3_open",
@@ -62,10 +61,9 @@ final class SqlBridge implements AutoCloseable {
     }
 
     /**
-     * Demo of {@link Dialogs} + structured {@link BridgeException} (Phase 4b) -
-     * shows a native "open file" dialog and returns the picked path, or throws
-     * a {@code "DIALOG_CANCELLED"} error the frontend can distinguish from a
-     * real failure (see {@code App.tsx}'s handling of this call).
+     * Native "open file" dialog (see {@link Dialogs}) - throws a structured
+     * {@code "DIALOG_CANCELLED"} error the frontend can distinguish from a
+     * real failure (see {@code services/sqlClient.ts}'s handling of this call).
      */
     @Bind
     String pickDatabaseFile() {
@@ -76,7 +74,7 @@ final class SqlBridge implements AutoCloseable {
         return path;
     }
 
-    /** Demo of {@link Clipboard} (Phase 4b). */
+    /** Copies text (e.g. rendered query results) to the OS clipboard - see {@link Clipboard}. */
     @Bind
     void copyToClipboard(String text) {
         Clipboard.write(text);
@@ -97,27 +95,8 @@ final class SqlBridge implements AutoCloseable {
         return "connected: " + path;
     }
 
-    /**
-     * Demo of @Bind's CompletableFuture<T> support (Milestone 3.1) - the processor
-     * generates .thenApply(...) + bindAsync() correctly for this return type, and
-     * genuinely completing from a background thread (as here, after a simulated
-     * delay) resolves the JS Promise correctly - see core/Application.java's
-     * {@code onInvoke}/{@code reply} javadoc for the fix that made this reliable
-     * (the webview request id has to be copied to a Java String synchronously,
-     * since the native pointer only lives for the duration of the invoke callback).
-     */
+    /** Runs arbitrary SQL and returns every row seen by {@link #onExecRow}. */
     @Bind
-    CompletableFuture<String> slowGreet(String name) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            return "Hello, " + name + "!";
-        });
-    }
-
     List<Map<String, String>> query(String sql) throws Throwable {
         if (db.equals(MemorySegment.NULL)) {
             throw new IllegalStateException("Not connected - call connect() first");
