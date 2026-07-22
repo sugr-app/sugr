@@ -89,7 +89,10 @@ public final class Tray implements AutoCloseable {
                     """.formatted(iconLine, Os.psQuote(tooltip), menuScript);
 
             String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
-            Process process = new ProcessBuilder("powershell.exe", "-NoProfile", "-EncodedCommand", encoded)
+            // -WindowStyle Hidden suppresses powershell.exe's own console window - see
+            // Dialogs' identical comment.
+            Process process = new ProcessBuilder("powershell.exe", "-NoProfile",
+                    "-WindowStyle", "Hidden", "-EncodedCommand", encoded)
                     .redirectErrorStream(true)
                     .start();
 

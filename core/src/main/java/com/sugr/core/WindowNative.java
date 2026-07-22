@@ -324,12 +324,18 @@ final class WindowNative {
                     int menuItemId = (int) (wParam & 0xFFFF);
                     Runnable action = menuItemAction(menuItemId);
                     if (action != null) {
-                        try {
-                            action.run();
-                        } catch (Throwable t) {
-                            System.err.println("[sugr] menu item action failed:");
-                            t.printStackTrace();
-                        }
+                        // Off the UI thread: this runs directly inside the window's message
+                        // dispatch, so running the action inline would block the whole app's
+                        // message pump (freezing every window) for as long as it takes - e.g.
+                        // a Dialogs.* call, which blocks until the user closes it.
+                        Thread.ofVirtual().start(() -> {
+                            try {
+                                action.run();
+                            } catch (Throwable t) {
+                                System.err.println("[sugr] menu item action failed:");
+                                t.printStackTrace();
+                            }
+                        });
                     }
                     return callOriginal(originalProc, hwnd, msg, wParam, lParam);
                 }

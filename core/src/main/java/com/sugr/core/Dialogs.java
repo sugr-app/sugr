@@ -28,9 +28,19 @@ public final class Dialogs {
 
     /** Shows a native "open file" dialog; returns the picked path, or null if cancelled. */
     public static String openFile(String title, String... extensions) {
+        return openFile(0, title, extensions);
+    }
+
+    /**
+     * Like {@link #openFile(String, String...)}, owned by the given native window handle
+     * (see {@link Window#nativeHandle}) - an owned dialog is grouped with its owner in the
+     * taskbar/Alt-Tab instead of appearing as an unrelated window of its own. Ignored on
+     * non-Windows platforms (falls back to {@link #openFile(String, String...)}'s behavior).
+     */
+    public static String openFile(long ownerHwnd, String title, String... extensions) {
         try {
             if (Os.isWindows()) {
-                return runPowerShell(openFileScript(title, extensions));
+                return runPowerShell(fileDialogScript("OpenFileDialog", ownerHwnd, title, extensions));
             } else if (Os.isMac()) {
                 return runAndTrim("osascript", "-e", "POSIX path of (choose file with prompt "
                         + appleScriptQuote(title) + ")");
@@ -44,9 +54,14 @@ public final class Dialogs {
 
     /** Shows a native "save file" dialog; returns the picked path, or null if cancelled. */
     public static String saveFile(String title, String... extensions) {
+        return saveFile(0, title, extensions);
+    }
+
+    /** Like {@link #saveFile(String, String...)}, owned by the given native window handle - see {@link #openFile(long, String, String...)}. */
+    public static String saveFile(long ownerHwnd, String title, String... extensions) {
         try {
             if (Os.isWindows()) {
-                return runPowerShell(saveFileScript(title, extensions));
+                return runPowerShell(fileDialogScript("SaveFileDialog", ownerHwnd, title, extensions));
             } else if (Os.isMac()) {
                 return runAndTrim("osascript", "-e", "POSIX path of (choose file name with prompt "
                         + appleScriptQuote(title) + ")");
@@ -60,12 +75,23 @@ public final class Dialogs {
 
     /** Shows a native message box/alert. */
     public static void showMessage(String title, String message) {
+        showMessage(0, title, message);
+    }
+
+    /** Like {@link #showMessage(String, String)}, owned by the given native window handle - see {@link #openFile(long, String, String...)}. */
+    public static void showMessage(long ownerHwnd, String title, String message) {
         try {
             if (Os.isWindows()) {
-                runPowerShell("""
+                String show = ownerHwnd == 0
+                        // MessageBoxOptions.DefaultDesktopOnly (native MB_DEFAULT_DESKTOP_ONLY) is what
+                        // keeps an unowned message box from getting its own taskbar button (it can't be
+                        // combined with an owner - .NET throws if both are given, hence the branch).
+                        ? "[System.Windows.Forms.MessageBox]::Show(%1$s, %2$s, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::None, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly) | Out-Null"
+                        : "[System.Windows.Forms.MessageBox]::Show($owner, %1$s, %2$s, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::None) | Out-Null";
+                runPowerShell(win32WindowHelper(ownerHwnd) + """
                         Add-Type -AssemblyName System.Windows.Forms
-                        [System.Windows.Forms.MessageBox]::Show(%s, %s) | Out-Null
-                        """.formatted(psQuote(message), psQuote(title)));
+                        %s
+                        """.formatted(show.formatted(psQuote(message), psQuote(title))));
             } else if (Os.isMac()) {
                 runAndTrim("osascript", "-e",
                         "display alert " + appleScriptQuote(title) + " message " + appleScriptQuote(message));
@@ -79,13 +105,22 @@ public final class Dialogs {
 
     /** Shows a native Yes/No confirm dialog; returns true if the user picked Yes. */
     public static boolean confirm(String title, String message) {
+        return confirm(0, title, message);
+    }
+
+    /** Like {@link #confirm(String, String)}, owned by the given native window handle - see {@link #openFile(long, String, String...)}. */
+    public static boolean confirm(long ownerHwnd, String title, String message) {
         try {
             if (Os.isWindows()) {
-                String result = runPowerShell("""
+                // See showMessage's comment on MessageBoxOptions.DefaultDesktopOnly vs. an owner.
+                String show = ownerHwnd == 0
+                        ? "$result = [System.Windows.Forms.MessageBox]::Show(%1$s, %2$s, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::None, [System.Windows.Forms.MessageBoxDefaultButton]::Button1, [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly)"
+                        : "$result = [System.Windows.Forms.MessageBox]::Show($owner, %1$s, %2$s, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::None)";
+                String result = runPowerShell(win32WindowHelper(ownerHwnd) + """
                         Add-Type -AssemblyName System.Windows.Forms
-                        $result = [System.Windows.Forms.MessageBox]::Show(%s, %s, [System.Windows.Forms.MessageBoxButtons]::YesNo)
+                        %s
                         Write-Output $result
-                        """.formatted(psQuote(message), psQuote(title)));
+                        """.formatted(show.formatted(psQuote(message), psQuote(title))));
                 return "Yes".equals(result);
             } else if (Os.isMac()) {
                 String result = runAndTrim("osascript", "-e", "button returned of (display dialog "
@@ -108,28 +143,42 @@ public final class Dialogs {
         }
     }
 
-    private static String openFileScript(String title, String[] extensions) {
-        return """
+    private static String fileDialogScript(String dialogType, long ownerHwnd, String title, String[] extensions) {
+        String showDialog = ownerHwnd == 0 ? "$dlg.ShowDialog()" : "$dlg.ShowDialog($owner)";
+        return win32WindowHelper(ownerHwnd) + """
                 Add-Type -AssemblyName System.Windows.Forms
-                $dlg = New-Object System.Windows.Forms.OpenFileDialog
+                $dlg = New-Object System.Windows.Forms.%s
                 $dlg.Title = %s
                 $dlg.Filter = %s
-                if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                if (%s -eq [System.Windows.Forms.DialogResult]::OK) {
                     Write-Output $dlg.FileName
                 }
-                """.formatted(psQuote(title), psQuote(windowsFilter(extensions)));
+                """.formatted(dialogType, psQuote(title), psQuote(windowsFilter(extensions)), showDialog);
     }
 
-    private static String saveFileScript(String title, String[] extensions) {
+    /**
+     * Wraps a raw HWND as an {@code IWin32Window} (via a minimal C# type - the built-in
+     * {@code NativeWindow} isn't a good fit here since {@code AssignHandle}/{@code ReleaseHandle}
+     * assume ownership of the handle's lifecycle, which this script doesn't have), so it can be
+     * passed as a dialog's owner. Empty when ownerHwnd is 0 (no owner - the caller's script
+     * shouldn't reference {@code $owner} in that case).
+     */
+    private static String win32WindowHelper(long ownerHwnd) {
+        if (ownerHwnd == 0) {
+            return "";
+        }
         return """
                 Add-Type -AssemblyName System.Windows.Forms
-                $dlg = New-Object System.Windows.Forms.SaveFileDialog
-                $dlg.Title = %s
-                $dlg.Filter = %s
-                if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-                    Write-Output $dlg.FileName
+                Add-Type -TypeDefinition '
+                using System;
+                using System.Windows.Forms;
+                public class SugrOwnerWindow : IWin32Window {
+                    public IntPtr Handle { get; private set; }
+                    public SugrOwnerWindow(IntPtr handle) { Handle = handle; }
                 }
-                """.formatted(psQuote(title), psQuote(windowsFilter(extensions)));
+                ' -ReferencedAssemblies System.Windows.Forms.dll
+                $owner = New-Object SugrOwnerWindow([IntPtr]%d)
+                """.formatted(ownerHwnd);
     }
 
     private static String windowsFilter(String[] extensions) {
@@ -162,7 +211,12 @@ public final class Dialogs {
         // progress records that otherwise leak into stdout as CLIXML noise.
         String withPreference = "$ProgressPreference = 'SilentlyContinue'\n" + script;
         String encoded = Base64.getEncoder().encodeToString(withPreference.getBytes(StandardCharsets.UTF_16LE));
-        Process p = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
+        // -WindowStyle Hidden suppresses powershell.exe's own console window (which would
+        // otherwise flash/appear in the taskbar alongside the app) - it has no effect on
+        // the actual dialog windows the script itself creates (System.Windows.Forms owns
+        // those as separate top-level windows).
+        Process p = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive",
+                "-WindowStyle", "Hidden", "-EncodedCommand", encoded)
                 .redirectErrorStream(true)
                 .start();
         String output = readAll(p);

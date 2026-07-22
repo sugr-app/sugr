@@ -62,7 +62,10 @@ public final class Clipboard {
         // when there's no interactive host, corrupting whatever we're trying to read.
         String withPreference = "$ProgressPreference = 'SilentlyContinue'\n" + script;
         String encoded = Base64.getEncoder().encodeToString(withPreference.getBytes(StandardCharsets.UTF_16LE));
-        Process p = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded)
+        // -WindowStyle Hidden suppresses powershell.exe's own console window - see Dialogs'
+        // identical comment.
+        Process p = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive",
+                "-WindowStyle", "Hidden", "-EncodedCommand", encoded)
                 .redirectErrorStream(true)
                 .start();
         String output = readAll(p);

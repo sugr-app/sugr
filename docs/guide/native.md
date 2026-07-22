@@ -46,10 +46,19 @@ try {
 Dialogs.openFile(String title, String... extensions)   // -> picked path, or null if cancelled
 Dialogs.saveFile(String title, String... extensions)    // -> picked path, or null if cancelled
 Dialogs.showMessage(String title, String message)        // -> void
+Dialogs.confirm(String title, String message)             // -> true if the user picked Yes
 
 Clipboard.read()          // -> current clipboard text, or null
 Clipboard.write(String text)
 ```
+
+Every `Dialogs` method also has an overload taking a native window handle as the first
+argument (e.g. `Dialogs.showMessage(long ownerHwnd, String title, String message)`) -
+pass `window.nativeHandle()` (see [`Window`](/guide/window)) to make the dialog an owned
+child of that window. This is what keeps the dialog grouped with the app's own taskbar
+entry (and, on Windows, shown together in its Alt-Tab/taskbar hover preview) instead of
+appearing as an unrelated window of its own - worth doing for any dialog triggered from a
+menu item or other place that isn't already inside a request from that window's own page.
 
 ## How it's implemented
 
