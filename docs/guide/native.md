@@ -1,9 +1,9 @@
-# Native dialogs & clipboard
+# Native dialogs, clipboard & notifications
 
-`core.Dialogs` and `core.Clipboard` are plain Java utility classes - not
-wired into `Application.Builder` or exposed to JS automatically. You call
-them from your own `@Bind`/hand-written methods, the same as any other Java
-code:
+`core.Dialogs`, `core.Clipboard`, and `core.Notification` are plain Java
+utility classes - not wired into `Application.Builder` or exposed to JS
+automatically. You call them from your own `@Bind`/hand-written methods, the
+same as any other Java code:
 
 ```java
 import com.sugr.bridge.BridgeException;
@@ -50,6 +50,24 @@ Dialogs.confirm(String title, String message)             // -> true if the user
 
 Clipboard.read()          // -> current clipboard text, or null
 Clipboard.write(String text)
+
+Notification.show(String title, String message)               // -> void, fire-and-forget
+Notification.show(String title, String message, String iconPath)  // -> same, with a custom icon
+Notification.registerApp(String appId, String displayName, String exePath, String iconPath)
+```
+
+`iconPath` (on `show`) is a local file path to a PNG/JPG (not an `.ico`) -
+on Windows it becomes the toast's `appLogoOverride` image, and doesn't need
+any AUMID/shortcut registration - it works today, in `sugr dev` or
+otherwise.
+
+Call `registerApp` once at startup, before the first `show`, to also brand
+the toast's *sender name* with your own app instead of "Windows PowerShell"
+(see the warning below for why that's a separate concern from the icon):
+
+```java
+Notification.registerApp("com.example.myapp", "My App",
+    ProcessHandle.current().info().command().orElse(null), iconPath);
 ```
 
 Every `Dialogs` method also has an overload taking a native window handle as the first
@@ -62,14 +80,14 @@ menu item or other place that isn't already inside a request from that window's 
 
 ## How it's implemented
 
-Rather than binding each OS's native dialog/clipboard API directly via FFM,
-these shell out to a small script per OS:
+Rather than binding each OS's native dialog/clipboard/notification API
+directly via FFM, these shell out to a small script per OS:
 
-| | Dialogs | Clipboard |
-|---|---|---|
-| Windows | PowerShell + `System.Windows.Forms` | PowerShell's `Get-Clipboard`/`Set-Clipboard` |
-| macOS | `osascript` (AppleScript) | `pbcopy`/`pbpaste` |
-| Linux | `zenity` | `xclip` (falls back to `xsel`) |
+| | Dialogs | Clipboard | Notification |
+|---|---|---|---|
+| Windows | PowerShell + `System.Windows.Forms` | PowerShell's `Get-Clipboard`/`Set-Clipboard` | PowerShell + WinRT's `Windows.UI.Notifications.ToastNotificationManager` |
+| macOS | `osascript` (AppleScript) | `pbcopy`/`pbpaste` | `osascript`'s `display notification` |
+| Linux | `zenity` | `xclip` (falls back to `xsel`) | `notify-send` |
 
 This is a deliberate trade-off, not a placeholder: Windows' native file
 dialog API (`comdlg32`'s `GetOpenFileNameW`/`GetSaveFileNameW`) takes a
@@ -82,10 +100,24 @@ process-spawn per call is the safer trade for something a user clicks
 occasionally, not a hot path.
 
 ::: warning Verified on Windows only
-The Windows path (dialogs and clipboard) has been exercised end to end in a
-real running app. macOS (`osascript`/`pbcopy`/`pbpaste`) and Linux
-(`zenity`/`xclip`/`xsel`) follow the same shape using each platform's
-standard, well-documented tools, but haven't been run on those OSes yet.
+The Windows path (dialogs, clipboard, and notifications) has been exercised
+end to end in a real running app. macOS (`osascript`/`pbcopy`/`pbpaste`) and
+Linux (`zenity`/`xclip`/`xsel`/`notify-send`) follow the same shape using
+each platform's standard, well-documented tools, but haven't been run on
+those OSes yet.
+:::
+
+::: warning Without `registerApp`, notification toasts show "Windows PowerShell" as the sender name
+Showing a toast via `ToastNotificationManager` requires an AppUserModelID
+registered with the OS - normally via a Start Menu shortcut carrying a
+matching `System.AppUserModel.ID` property, which only exists once an app
+is installed via a real installer. `Notification.registerApp` creates that
+shortcut itself (via `IShellLinkW`/`IPropertyStore` COM interop, since a
+plain `New-Object -ComObject WScript.Shell` shortcut can't set that
+property) the first time it's called, so it works in `sugr dev` too - not
+just once `sugr package`'d. Skip calling it and `show` falls back to the
+well-known, already-registered AUMID for Windows PowerShell itself, so
+toasts still work everywhere, just under that name instead of the app's.
 :::
 
 ## Structured bridge errors

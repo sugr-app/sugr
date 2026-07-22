@@ -2,6 +2,7 @@ package com.sugr.examples.sqlclient;
 
 import com.sugr.core.Application;
 import com.sugr.core.Frontend;
+import com.sugr.core.Notification;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -18,6 +19,13 @@ public final class Main {
     public static void main(String[] args) throws Throwable {
         SqlService sqlService = new SqlService();
         SqlServiceBridge generatedBridge = new SqlServiceBridge(sqlService);
+
+        // Brands connect()'s toasts with this app's own name/icon instead of "Windows
+        // PowerShell" - see Notification.registerApp's javadoc. Must run before the first
+        // Notification.show() call to take effect.
+        Notification.registerApp("sugr.examples.sqlclient", "sugr - SQL client",
+                ProcessHandle.current().info().command().orElse(null), sqlService.iconPath());
+
         // Menu item actions need the Application instance (to reload/emit),
         // which only exists once the builder finishes - stash it via onReady().
         AtomicReference<Application> appRef = new AtomicReference<>();

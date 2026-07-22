@@ -5,6 +5,7 @@ import com.sugr.bridge.BridgeException;
 import com.sugr.core.Clipboard;
 import com.sugr.core.Dialogs;
 import com.sugr.core.NativeLibrary;
+import com.sugr.core.Notification;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -35,10 +36,15 @@ final class SqlService implements AutoCloseable {
 
     private MemorySegment db = MemorySegment.NULL;
     private List<Map<String, String>> lastRows;
+    private final String iconPath;
 
     SqlService() throws Throwable {
         Path dllPath = NativeLibrary.extractToTempFile(SqlService.class, "/native/sqlite3.dll", "sqlite3", ".dll");
         NativeLibrary sqlite = new NativeLibrary(dllPath, arena);
+        // Used as the connect() notification's icon (see Notification.show's iconPath param) -
+        // a placeholder for now, swap for the app's real branding whenever it has one.
+        iconPath = NativeLibrary.extractToTempFile(SqlService.class, "/native/icon.png", "sugr-sql-client-icon", ".png")
+                .toString();
 
         sqlite3_open = sqlite.downcall("sqlite3_open",
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
@@ -58,6 +64,11 @@ final class SqlService implements AutoCloseable {
                 MethodType.methodType(int.class, MemorySegment.class, int.class, MemorySegment.class, MemorySegment.class),
                 FunctionDescriptor.of(ValueLayout.JAVA_INT,
                         ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    }
+
+    /** The extracted temp-file path of the bundled placeholder icon - see {@code Main}'s {@code Notification.registerApp} call. */
+    String iconPath() {
+        return iconPath;
     }
 
     /**
@@ -80,6 +91,8 @@ final class SqlService implements AutoCloseable {
         Clipboard.write(text);
     }
 
+    /** Notifies via a toast (see {@link Notification}) on top of the returned/thrown result -
+     * a passive supplement to the frontend's own status text/error banner, not a replacement. */
     @Bind
     String connect(String path) throws Throwable {
         if (!db.equals(MemorySegment.NULL)) {
@@ -89,9 +102,11 @@ final class SqlService implements AutoCloseable {
         MemorySegment pathNative = arena.allocateFrom(path);
         int result = (int) sqlite3_open.invoke(pathNative, dbHandlePtr);
         if (result != 0) {
+            Notification.show("Connection failed", "Could not open " + path, iconPath);
             throw new RuntimeException("sqlite3_open failed with code " + result);
         }
         db = dbHandlePtr.get(ValueLayout.ADDRESS, 0);
+        Notification.show("Connected", "Connected to " + path, iconPath);
         return "connected: " + path;
     }
 
