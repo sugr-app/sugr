@@ -13,6 +13,9 @@ by walking up from the current directory to the nearest `settings.gradle.kts`
 - pass `--task`/`--gradle-dir` explicitly if it guesses wrong (e.g. a
 non-standard `frontend/`+`lib/` layout).
 
+See [Debugging](/guide/debug) for `sugr debug` - attaching a real IDE
+debugger to the backend and/or frontend.
+
 ## Production build (JAR, no native-image yet)
 
 ```sh

@@ -63,3 +63,4 @@ confirm the Java bridge is wired up (it calls `Backend.hello()` in
 - [Binding Java to JS](/guide/bind) - `@Bind`, hand-written binds, and when to use which
 - [Events](/guide/events) - the two-way event bus
 - [Building & packaging](/guide/build) - `sugr build`, and native-image today
+- [Debugging](/guide/debug) - `sugr debug`, attaching a real IDE debugger to backend/frontend

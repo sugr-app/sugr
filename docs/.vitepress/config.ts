@@ -11,6 +11,10 @@ export default withMermaid(defineConfig({
       { text: 'Guide', link: '/guide/quickstart' },
       { text: 'How it works', link: '/how-it-works' },
       { text: 'Reference', link: '/reference/api' },
+      // CONTRIBUTING.md deliberately lives at the repo root (GitHub's standard
+      // discovery spot - surfaced automatically in the "Contribute" tab and when
+      // opening an issue/PR), not duplicated into this user-facing docs site.
+      { text: 'Contributing', link: 'https://github.com/alexnguyen03/sugur/blob/master/CONTRIBUTING.md' },
     ],
 
     sidebar: [
@@ -23,6 +27,7 @@ export default withMermaid(defineConfig({
           { text: 'Events', link: '/guide/events' },
           { text: 'Native dialogs & clipboard', link: '/guide/native' },
           { text: 'Building & packaging', link: '/guide/build' },
+          { text: 'Debugging', link: '/guide/debug' },
         ],
       },
       {

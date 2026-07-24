@@ -11,7 +11,7 @@ import picocli.CommandLine.Command;
         mixinStandardHelpOptions = true,
         version = "sugr 0.1.0-dev",
         description = "Run and build sugr apps.",
-        subcommands = {DoctorCommand.class, DevCommand.class, BuildCommand.class, InitCommand.class, PackageCommand.class}
+        subcommands = {DoctorCommand.class, DevCommand.class, DebugCommand.class, BuildCommand.class, InitCommand.class, PackageCommand.class}
 )
 public final class Main implements Runnable {
 

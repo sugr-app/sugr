@@ -90,7 +90,7 @@ final class PackageCommand implements Callable<Integer> {
 
         if (ProcessUtil.isWindows()) {
             return packageWindows(binary, dest);
-        } else if (isMac()) {
+        } else if (ProcessUtil.isMac()) {
             return packageMac(binary, dest);
         } else {
             return packageLinux(binary, dest);
@@ -136,10 +136,6 @@ final class PackageCommand implements Callable<Integer> {
                     .findFirst()
                     .orElse(null);
         }
-    }
-
-    private static boolean isMac() {
-        return System.getProperty("os.name", "").toLowerCase().contains("mac");
     }
 
     // ---- Windows: NSIS ----

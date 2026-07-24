@@ -18,7 +18,7 @@ final class DoctorCommand implements Callable<Integer> {
         allOk &= check("Gradle", () -> firstLineContaining(ProcessUtil.runCapture("gradle", "-v"), "Gradle "));
         if (ProcessUtil.isWindows()) {
             allOk &= check("WebView2 Runtime", this::checkWebView2);
-        } else if (isMac()) {
+        } else if (ProcessUtil.isMac()) {
             allOk &= check("Xcode Command Line Tools", this::checkXcodeCLT);
         } else {
             allOk &= check("webkit2gtk-dev", this::checkWebkit2Gtk);
@@ -66,10 +66,6 @@ final class DoctorCommand implements Callable<Integer> {
                 "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
                 "/v", "pv");
         return firstLineContaining(out, "pv");
-    }
-
-    private static boolean isMac() {
-        return System.getProperty("os.name", "").toLowerCase().contains("mac");
     }
 
     private String checkXcodeCLT() {
