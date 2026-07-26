@@ -24,6 +24,21 @@ public class Backend {
 }
 ```
 
+The JS-visible method name defaults to the Java method name - pass a value
+to `@Bind` to expose it under a different name instead (e.g. to avoid a
+clash, or to keep the Java name more Java-idiomatic than the JS one):
+
+```java
+@Bind("pickFile")
+public String pickDatabaseFile() {
+    ...
+}
+```
+
+```ts
+await Backend.pickFile()   // not pickDatabaseFile
+```
+
 Compiling generates `BackendBridge.java` (in the same package) and
 `Backend.generated.ts`. Wire it up:
 
@@ -71,16 +86,27 @@ javadoc).
 
 ## Hand-written binds
 
-Use `Application.Builder.bind()`/`bindAsync()` directly when you need
-something codegen doesn't know how to express - most commonly, a side effect
-alongside the response (like emitting an event to other listeners):
+`@Bind` is an annotation on a method you own, resolved at *compile time* -
+that's the shape it can't escape. Reach for `Application.Builder.bind()`/
+`bindAsync()` directly only when that shape doesn't fit:
+
+- **The method name isn't known until runtime** - e.g. a set of bindings
+  driven by config or a plugin list, where `@Bind` (a fixed, compile-time
+  annotation) can't apply.
+- **You don't own the source** - exposing a third-party/library method you
+  can't add `@Bind` to.
+
+Side effects alongside the response (emitting an event, logging, etc.) are
+**not** a reason to reach for this - an `@Bind` method is a normal Java
+method body, free to do anything a hand-written handler can, including
+calling `app.emit()` itself if it holds a reference to the running
+`Application` (e.g. stashed from `onReady()`).
 
 ```java
-.bind("query", params -> {
-    List<String> args = Json.parseStringArray(params);
-    List<Row> rows = db.query(args.get(0));
-    app.emit("query-executed", Json.quote(rows.size() + " row(s)"));   // side effect
-    return rowsToJson(rows);
+.bind("runPlugin", params -> {
+    String pluginName = Json.parseStringArray(params).get(0);
+    Plugin plugin = pluginRegistry.get(pluginName);   // not known at compile time
+    return plugin.run();
 })
 ```
 

@@ -16,7 +16,28 @@ non-standard `frontend/`+`lib/` layout).
 See [Debugging](/guide/debug) for `sugr debug` - attaching a real IDE
 debugger to the backend and/or frontend.
 
-## Production build (JAR, no native-image yet)
+## `sugr build` vs. `sugr package`: which one do I need?
+
+- **`sugr build`** → a runnable **JAR**. Fast (no native-image compile),
+  works the same on every OS, but the machine running it needs a JVM
+  installed. Good for a quick "does the production-embedded frontend
+  actually work" check, or for environments where requiring a JVM is fine
+  (internal tools, servers).
+- **`sugr package`** → a standalone **native binary + OS installer**, no JVM
+  needed on the target machine. This is what you ship to end users - but it
+  costs more to build (native-image's whole-program compile is slow) and
+  needs extra local setup (see below).
+
+::: warning `sugr package` doesn't re-embed the frontend itself
+`sugr package` only runs `nativeCompile` - it does *not* run `pnpm build` or
+copy `frontend/dist/` into `lib/src/main/resources/frontend` the way `sugr
+build` does. It packages whatever is already sitting in that resources
+folder, so if you've changed the frontend since your last `sugr build`,
+run `sugr build` (or at least its frontend-embed step) again first - otherwise
+`sugr package` ships a stale (or, on a fresh checkout, missing) frontend.
+:::
+
+## Production build (JAR)
 
 ```sh
 sugr build

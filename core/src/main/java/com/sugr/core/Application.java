@@ -151,6 +151,18 @@ public final class Application {
             return this;
         }
 
+        /**
+         * Registers a raw JSON handler for {@code method} directly, bypassing the
+         * {@code @Bind}/processor codegen path entirely. Prefer {@code @Bind} - it
+         * gives you a typed Java method plus a generated TS stub for free, and an
+         * {@code @Bind} method is still free to do anything a hand-written handler
+         * can (including calling {@link #on} listeners or emitting events, given a
+         * reference to the running {@code Application}). Reach for this instead
+         * only when {@code @Bind}'s "annotate one of your own methods at compile
+         * time" shape doesn't fit: registering method names that aren't known
+         * until runtime (e.g. driven by config), or exposing a method you don't
+         * own the source of (a third-party/library method you can't annotate).
+         */
         public Builder bind(String method, Bridge.Handler handler) {
             windowBuilder.bind(method, handler);
             return this;
