@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { events } from '@sugr/runtime'
+import { AppEvents } from './generated/AppEvents.generated'
 import { ConnectionPanel } from './components/ConnectionPanel'
 import { QueryEditor } from './components/QueryEditor'
 import { TablesList } from './components/TablesList'
@@ -41,12 +41,10 @@ function App() {
     // The native "File > Load DB file..." menu item (see AppMenu.java) shows the
     // dialog on the Java side (menus don't have a JS-side handler to call into),
     // then hands the picked path over as an event - we own connecting to it.
-    const onMenuLoadDb = (path: string) => {
+    return AppEvents.onMenuLoadDb((path) => {
       setDbPath(path)
       void connectTo(path)
-    }
-    events.on<string>('menu-load-db', onMenuLoadDb)
-    return () => events.off('menu-load-db', onMenuLoadDb)
+    })
   }, [])
 
   async function connectTo(path: string) {

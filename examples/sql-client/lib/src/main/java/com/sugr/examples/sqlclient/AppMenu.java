@@ -1,6 +1,5 @@
 package com.sugr.examples.sqlclient;
 
-import com.sugr.bridge.Json;
 import com.sugr.core.Application;
 import com.sugr.core.Dialogs;
 import com.sugr.core.Menu;
@@ -49,7 +48,7 @@ final class AppMenu {
         // grouped with the app's.
         String path = Dialogs.openFile(app.mainWindow().nativeHandle(), "Choose a SQLite database", "db", "sqlite");
         if (path != null) {
-            app.mainWindow().emit("menu-load-db", Json.quote(path));
+            new AppEventsEmitter(app.mainWindow()).menuLoadDb(path);
         }
     }
 }
