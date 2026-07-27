@@ -34,6 +34,9 @@ final class BuildCommand implements Callable<Integer> {
             + "(auto-detected by default - see GradleProjectLocator)")
     String gradleDir;
 
+    @Option(names = {"-e", "--env"}, description = "Environment (dev, staging, prod)", defaultValue = "prod")
+    String env;
+
     @Override
     public Integer call() throws Exception {
         Path frontend = Path.of(frontendDir).toAbsolutePath().normalize();
@@ -45,8 +48,8 @@ final class BuildCommand implements Callable<Integer> {
             return 1;
         }
 
-        System.out.println("[sugr] building frontend in " + frontend + " ...");
-        int viteExit = runInherited(frontend, ProcessUtil.shellCommand("pnpm", "build"));
+        System.out.println("[sugr] building frontend in " + frontend + " (env=" + env + ") ...");
+        int viteExit = runInherited(frontend, ProcessUtil.shellCommand("pnpm", "build", "--mode", env));
         if (viteExit != 0) {
             System.err.println("[sugr] frontend build failed (exit " + viteExit + ")");
             return viteExit;

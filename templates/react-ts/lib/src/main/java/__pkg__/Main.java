@@ -1,5 +1,6 @@
 package app.__pkg__;
 
+import com.sugr.core.AppConfig;
 import com.sugr.core.Application;
 import com.sugr.core.Frontend;
 
@@ -11,11 +12,15 @@ import com.sugr.core.Frontend;
 public final class Main {
 
     public static void main(String[] args) throws Throwable {
+        // application.properties + application-<env>.properties (env from SUGR_ENV,
+        // defaulting to "prod") - see docs/guide/environments.md.
+        AppConfig config = AppConfig.load("SUGR_ENV", "prod");
+
         Backend backend = new Backend();
         BackendBridge generatedBridge = new BackendBridge(backend);
 
         Application.Builder builder = Application.builder()
-                .title("__APP_NAME__")
+                .title(config.getOrDefault("app.name", "__APP_NAME__"))
                 .size(900, 640)
                 .frontend(Frontend.auto());
 

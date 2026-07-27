@@ -27,6 +27,7 @@ export default withMermaid(defineConfig({
           { text: 'Events', link: '/guide/events' },
           { text: 'Native dialogs & clipboard', link: '/guide/native' },
           { text: 'Building & packaging', link: '/guide/build' },
+          { text: 'Environments', link: '/guide/environments' },
           { text: 'Debugging', link: '/guide/debug' },
         ],
       },

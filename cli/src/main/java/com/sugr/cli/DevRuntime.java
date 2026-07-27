@@ -20,12 +20,14 @@ import java.util.regex.Pattern;
 
 /**
  * Shared dev-loop engine behind both `sugr dev` and `sugr debug`: starts the
- * Vite dev server, waits for its URL, then runs the Java app together with
- * it (SUGR_DEV_URL - see examples/sql-client), watching Java sources and
- * rebuilding/restarting the app on change. `sugr debug` reuses this exact
- * loop, only adding extra gradle args (e.g. `--debug-jvm`) and extra
- * environment variables (e.g. WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS to
- * enable CDP remote debugging of the webview) - see DebugCommand.
+ * Vite dev server (passed `--mode <env>` so it picks up the right
+ * `.env.<env>` file), waits for its URL, then runs the Java app together
+ * with it (SUGR_DEV_URL/SUGR_ENV - see examples/sql-client and
+ * com.sugr.core.AppConfig), watching Java sources and rebuilding/restarting
+ * the app on change. `sugr debug` reuses this exact loop, only adding extra
+ * gradle args (e.g. `--debug-jvm`) and extra environment variables (e.g.
+ * WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS to enable CDP remote debugging of
+ * the webview) - see DebugCommand.
  */
 final class DevRuntime {
 
@@ -41,17 +43,19 @@ final class DevRuntime {
     private final GradleProjectLocator.Result located;
     private final List<String> extraGradleArgs;
     private final Map<String, String> extraEnv;
+    private final String env;
 
     private String devUrl;
     private final AtomicReference<Process> currentApp = new AtomicReference<>();
 
     DevRuntime(String frontendDir, String javaSrcDir, GradleProjectLocator.Result located,
-               List<String> extraGradleArgs, Map<String, String> extraEnv) {
+               List<String> extraGradleArgs, Map<String, String> extraEnv, String env) {
         this.frontendDir = frontendDir;
         this.javaSrcDir = javaSrcDir;
         this.located = located;
         this.extraGradleArgs = extraGradleArgs;
         this.extraEnv = extraEnv;
+        this.env = env;
     }
 
     Integer run() throws Exception {
@@ -62,7 +66,7 @@ final class DevRuntime {
         }
 
         System.out.println("[sugr] starting Vite dev server in " + frontend + " ...");
-        Process vite = new ProcessBuilder(ProcessUtil.shellCommand("pnpm", "dev"))
+        Process vite = new ProcessBuilder(ProcessUtil.shellCommand("pnpm", "dev", "--mode", env))
                 .directory(frontend.toFile())
                 .redirectErrorStream(true)
                 .start();
@@ -121,6 +125,7 @@ final class DevRuntime {
         ProcessBuilder appPb = new ProcessBuilder(ProcessUtil.shellCommand(gradleArgs.toArray(new String[0])));
         appPb.directory(located.gradleDir().toFile());
         appPb.environment().put("SUGR_DEV_URL", devUrl);
+        appPb.environment().put("SUGR_ENV", env);
         appPb.environment().putAll(extraEnv);
         appPb.redirectErrorStream(true);
         appPb.redirectOutput(ProcessBuilder.Redirect.INHERIT);

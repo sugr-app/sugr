@@ -15,6 +15,7 @@ import {
   rowsToClipboardText,
   type Row,
 } from './services/sqlClient'
+import { env } from './env'
 import './App.css'
 
 const DEFAULT_SQL =
@@ -123,7 +124,8 @@ function App() {
 
   return (
     <main id="sql-client">
-      <h1>sugr - SQL client</h1>
+      <h1>{env.appTitle ?? 'sugr - SQL client'}</h1>
+      <p className="env-badge">env: {env.mode}</p>
 
       <ConnectionPanel
         dbPath={dbPath}

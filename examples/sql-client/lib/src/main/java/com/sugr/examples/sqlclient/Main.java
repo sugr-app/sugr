@@ -1,5 +1,6 @@
 package com.sugr.examples.sqlclient;
 
+import com.sugr.core.AppConfig;
 import com.sugr.core.Application;
 import com.sugr.core.Frontend;
 import com.sugr.core.Notification;
@@ -17,6 +18,10 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class Main {
 
     public static void main(String[] args) throws Throwable {
+        // application.properties + application-<env>.properties (env from SUGR_ENV,
+        // defaulting to "prod") - see docs/guide/environments.md.
+        AppConfig config = AppConfig.load("SUGR_ENV", "prod");
+
         SqlService sqlService = new SqlService();
         SqlServiceBridge generatedBridge = new SqlServiceBridge(sqlService);
 
@@ -31,7 +36,7 @@ public final class Main {
         AtomicReference<Application> appRef = new AtomicReference<>();
 
         Application.Builder builder = Application.builder()
-                .title("sugr - SQL client")
+                .title(config.getOrDefault("app.windowTitle", "sugr - SQL client"))
                 .size(700, 700)
                 .frontend(Frontend.auto())
                 .menu(AppMenu.build(appRef))

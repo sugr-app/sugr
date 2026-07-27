@@ -29,9 +29,12 @@ final class DevCommand implements Callable<Integer> {
             + "(auto-detected by default - see GradleProjectLocator)")
     String gradleDir;
 
+    @Option(names = {"-e", "--env"}, description = "Environment (dev, staging, prod)", defaultValue = "dev")
+    String env;
+
     @Override
     public Integer call() throws Exception {
         GradleProjectLocator.Result located = GradleProjectLocator.resolve(gradleTask, gradleDir, "run");
-        return new DevRuntime(frontendDir, javaSrcDir, located, List.of(), Map.of()).run();
+        return new DevRuntime(frontendDir, javaSrcDir, located, List.of(), Map.of(), env).run();
     }
 }

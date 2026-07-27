@@ -50,6 +50,9 @@ final class DebugCommand implements Callable<Integer> {
             description = "Don't debug the frontend - no CDP remote debugging port on the webview")
     boolean noFrontend;
 
+    @Option(names = {"-e", "--env"}, description = "Environment (dev, staging, prod)", defaultValue = "dev")
+    String env;
+
     @Override
     public Integer call() throws Exception {
         GradleProjectLocator.Result located = GradleProjectLocator.resolve(gradleTask, gradleDir, "run");
@@ -80,6 +83,6 @@ final class DebugCommand implements Callable<Integer> {
         Path appRoot = Path.of(".").toAbsolutePath().normalize();
         VsCodeLaunch.ensure(appRoot, BACKEND_PORT, FRONTEND_PORT);
 
-        return new DevRuntime(frontendDir, javaSrcDir, located, extraGradleArgs, extraEnv).run();
+        return new DevRuntime(frontendDir, javaSrcDir, located, extraGradleArgs, extraEnv, env).run();
     }
 }

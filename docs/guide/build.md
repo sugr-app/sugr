@@ -16,6 +16,10 @@ non-standard `frontend/`+`lib/` layout).
 See [Debugging](/guide/debug) for `sugr debug` - attaching a real IDE
 debugger to the backend and/or frontend.
 
+`sugr dev` defaults to the `dev` environment; pass `--env staging`/`--env prod`
+to run against a different one instead (also accepted by `sugr build` and
+`sugr debug`) - see [Environments](/guide/environments).
+
 ## `sugr build` vs. `sugr package`: which one do I need?
 
 - **`sugr build`** → a runnable **JAR**. Fast (no native-image compile),
@@ -43,13 +47,20 @@ run `sugr build` (or at least its frontend-embed step) again first - otherwise
 sugr build
 ```
 
-1. `pnpm build` in `frontend/`
+1. `pnpm build` in `frontend/` (passing `--mode <env>`, defaulting to `prod`)
 2. Copies `frontend/dist/` into `lib/src/main/resources/frontend`
 3. Runs the Gradle build
 
 The result is a runnable JAR (via `gradle run`, or the `application` plugin's
 distribution) that serves the embedded frontend - still needs a JVM
 installed on the machine that runs it.
+
+```sh
+sugr build --env staging
+```
+
+See [Environments](/guide/environments) for how `--env` selects `.env.<env>`
+on the frontend and `application-<env>.properties` on the backend.
 
 ## Native binary + installer
 
