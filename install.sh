@@ -26,6 +26,15 @@ case "$os" in
                 ;;
         esac
         ;;
+    MINGW*|MSYS*|CYGWIN*)
+        # Git Bash/MSYS2/Cygwin all report a *_NT-* uname - it's really Windows underneath,
+        # just running this script from a POSIX shell. install.ps1 is the supported path
+        # there: it persists to the real Windows user PATH, which a plain `export` from
+        # inside this shell can't do (it would only last the current bash session).
+        echo "sugr: this looks like Windows (via $os) - use install.ps1 instead, from PowerShell:" >&2
+        echo "  irm https://raw.githubusercontent.com/$repo/main/install.ps1 | iex" >&2
+        exit 1
+        ;;
     *)
         echo "sugr: unsupported OS '$os' - see https://github.com/$repo#cli to build from source." >&2
         exit 1
