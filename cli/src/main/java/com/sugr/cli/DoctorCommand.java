@@ -11,6 +11,7 @@ final class DoctorCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         boolean allOk = true;
+        allOk &= check("sugr CLI", this::checkSugrVersion);
         allOk &= check("Java", this::checkJava);
         allOk &= check("GraalVM native-image", this::checkNativeImage);
         allOk &= check("Node.js", () -> firstLine(ProcessUtil.runCapture("node", "--version")));
@@ -43,6 +44,13 @@ final class DoctorCommand implements Callable<Integer> {
         boolean ok = result != null && !result.isBlank();
         System.out.printf("[%s] %-24s %s%n", ok ? "OK" : "MISSING", name, ok ? result.trim() : "not found on PATH");
         return ok;
+    }
+
+    /** Reads Main's own @Command(version = ...) rather than duplicating that string here. */
+    private String checkSugrVersion() {
+        Command command = Main.class.getAnnotation(Command.class);
+        String[] version = command.version();
+        return version.length > 0 ? version[0] : null;
     }
 
     private String checkJava() {
