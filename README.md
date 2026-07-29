@@ -6,19 +6,33 @@ Sugr is a desktop app framework that pairs a Java backend with a React (or any w
 
 ## Status
 
-🚧 **Phase 4a in progress** (closing out v0.1: annotation processor, CLI,
-templates + CI, docs are done; native-image packaging just landed).
-`core`, `bridge`, `processor`, `cli`, and `@sugr/runtime` exist as a Gradle +
-pnpm monorepo. [`examples/sql-client`](examples/sql-client) runs entirely on
-the public API: most methods are exposed with a single `@Bind` annotation (no
+🚧 **v0.1 done, v0.2-v0.4 done, working past them** (see [plan.md](plan.md)
+for the full phased roadmap). `core`, `bridge`, `processor`, `cli`, and
+`@sugr/runtime` exist as a Gradle + pnpm monorepo.
+[`examples/sql-client`](examples/sql-client) runs entirely on the public
+API: most methods are exposed with a single `@Bind` annotation (no
 hand-written JSON), one method stays hand-written to show it composes with
-generated bindings, and the two-way event bus works end to end.
-`sugr init/dev/build/doctor/package` automate the day-to-day workflow (see
-below and [`docs/`](docs)) - `sugr package` builds a native-image binary and
-wraps it into a real OS installer (NSIS on Windows, tested end to end;
-macOS/Linux follow the same shape but are unverified so far).
-`@sugr/runtime` is workspace-only for now - nothing is published anywhere
-(that's later in Phase 4). See [plan.md](plan.md) for the full roadmap.
+generated bindings, `@Emits` pushes Java→JS events from native menu/shortcut
+actions, and the two-way event bus works end to end.
+`sugr init/dev/debug/build/package/doctor` automate the day-to-day workflow
+(see [CLI](#cli) below and [`docs/`](docs)) - `sugr package` builds a
+native-image binary and wraps it into a real OS installer (NSIS on Windows,
+tested end to end; macOS/Linux follow the same shape but are unverified so
+far). Per-environment config (`dev`/`staging`/`prod`, both backend and
+frontend) is wired through `--env` on `dev`/`debug`/`build`/`package`.
+
+Native OS integration beyond the bridge itself: dialogs, clipboard,
+notifications, multi-window + window events, system tray, native menus,
+global keyboard shortcuts, and launch-at-login autostart - see
+[Native dialogs, clipboard, notifications & autostart](docs/guide/native.md),
+[Window & frontend](docs/guide/window.md), and
+[Global shortcuts](docs/guide/shortcuts.md).
+
+The `sugr` CLI itself is installable today as a prebuilt binary via
+[GitHub Releases](#cli) - `core`/`bridge`/`processor` (Maven Central) and
+`@sugr/runtime` (npm) are still workspace-only, so `sugr init` can only
+scaffold an app *inside this checkout* for now (planned for later, see
+plan.md).
 
 📖 Full docs: run `pnpm --filter sugr-docs dev` and open the printed
 localhost URL (no hosted docs site yet).
@@ -141,11 +155,16 @@ binary above) supports:
 | `sugr doctor` | Checks Java/GraalVM, native-image, Node, pnpm, Gradle, WebView2 (Windows) |
 | `sugr init <name>` | Scaffolds the [`templates/react-ts`](templates/react-ts) template into `examples/<name>` of the current checkout and registers it in settings.gradle.kts |
 | `sugr dev` | Runs the Vite dev server and the Java app together - Vite gives the frontend HMR, and `sugr dev` itself watches `lib/src/**/*.java` and rebuilds+restarts the app on change. Auto-detects the right Gradle task/root by walking up to the nearest settings.gradle.kts |
+| `sugr debug` | Like `dev`, but with backend (JDWP) and/or frontend (CDP) debugging enabled - attach a real IDE debugger to either side |
 | `sugr build` | Builds the frontend, embeds it into resources, then runs the Gradle build (JVM-based, not native-image) |
 | `sugr package` | Builds a native-image binary and wraps it into an OS installer - NSIS (`.exe`) on Windows, tested end to end; `.dmg`/`.deb` on macOS/Linux follow the same shape but are unverified so far |
 
 `dev`/`build` auto-detection covers the common case (run them from the app's
 directory); pass `--task`/`--gradle-dir` explicitly if it guesses wrong.
+`dev`/`debug`/`build`/`package` all accept `--env <name>` to pick which
+`.env.<name>` (frontend) and `application-<name>.properties` (backend) to
+build against - defaults to `dev` for `dev`/`debug`, `prod` for `build`/
+`package` (see [Environments](docs/guide/environments.md)).
 `sugr init` is scoped to scaffolding *inside* this checkout for now - since
 nothing is published, a scaffolded app can only depend on `core`/`bridge` as
 sibling Gradle projects in the same build. On Windows, `sugr package` locates
