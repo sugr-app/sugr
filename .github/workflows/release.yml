@@ -76,3 +76,7 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # SemVer prerelease tags (v0.1.0-rc1, v0.1.0-dev, ...) must not become
+          # what `releases/latest/download/...` resolves to - install.sh/install.ps1
+          # rely on that endpoint always pointing at the latest *stable* build.
+          prerelease: ${{ contains(github.ref_name, '-') }}
