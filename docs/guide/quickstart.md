@@ -17,6 +17,10 @@ missing:
 - [Gradle](https://gradle.org/) (or just use the repo's `./gradlew`)
 - [Node.js](https://nodejs.org/) 20+ and [pnpm](https://pnpm.io/)
 
+Get the `sugr` binary itself - either download the prebuilt native binary
+(see the [repo README's CLI section](https://github.com/sugr-app/sugr#cli)
+for the one-line install script), or build it from this checkout:
+
 ```sh
 ./gradlew :cli:installDist
 # add cli/build/install/sugr/bin to your PATH, then:

@@ -1,0 +1,78 @@
+name: Release CLI
+
+# Builds the `sugr` CLI as a native binary for each OS and publishes them as
+# assets on a GitHub Release - the "just download and use it" install path
+# documented in the README and served by install.sh/install.ps1. Doesn't
+# touch core/bridge/processor or the examples - only the cli module.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest runners are Apple Silicon (arm64) - no Intel mac
+          # binary is published yet, see install.sh's error message for that case.
+          - os: ubuntu-latest
+            asset_name: sugr-linux-x64
+          - os: windows-latest
+            asset_name: sugr-windows-x64.exe
+          - os: macos-latest
+            asset_name: sugr-macos-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up MSVC (Windows only, needed by native-image)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build the sugr CLI as a native binary
+        run: ./gradlew :cli:nativeCompile --console=plain
+
+      - name: Rename binary to its release asset name
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp cli/build/native/nativeCompile/sugr.exe "${{ matrix.asset_name }}"
+          else
+            cp cli/build/native/nativeCompile/sugr "${{ matrix.asset_name }}"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

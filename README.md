@@ -107,13 +107,34 @@ thread.
 
 ## CLI
 
-Build once (needs the tools `sugr doctor` checks for - GraalVM, Node, pnpm):
+Install the prebuilt native binary (no JVM/Gradle/GraalVM needed - macOS is
+Apple Silicon only for now, see [`install.sh`](install.sh) for the full
+platform list):
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/sugr-app/sugr/main/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/sugr-app/sugr/main/install.ps1 | iex
+```
+
+This downloads the latest [GitHub Release](https://github.com/sugr-app/sugr/releases)
+asset built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+(triggered by pushing a `v*` tag) into `~/.sugr/bin` (`%LOCALAPPDATA%\sugr\bin`
+on Windows) and adds it to your PATH.
+
+Or build it yourself from a checkout (needs the tools `sugr doctor` checks
+for - GraalVM, Node, pnpm):
 
 ```
 ./gradlew :cli:installDist
 ```
 
-The resulting `cli/build/install/sugr/bin/sugr(.bat)` supports:
+The resulting `cli/build/install/sugr/bin/sugr(.bat)` (or the downloaded
+binary above) supports:
 
 | Command | What it does |
 |---|---|
