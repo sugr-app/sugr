@@ -1,9 +1,9 @@
-# Native dialogs, clipboard & notifications
+# Native dialogs, clipboard, notifications & autostart
 
-`core.Dialogs`, `core.Clipboard`, and `core.Notification` are plain Java
-utility classes - not wired into `Application.Builder` or exposed to JS
-automatically. You call them from your own `@Bind`/hand-written methods, the
-same as any other Java code:
+`core.Dialogs`, `core.Clipboard`, `core.Notification`, and `core.AutoStart`
+are plain Java utility classes - not wired into `Application.Builder` or
+exposed to JS automatically. You call them from your own `@Bind`/hand-written
+methods, the same as any other Java code:
 
 ```java
 import com.sugr.bridge.BridgeException;
@@ -54,6 +54,10 @@ Clipboard.write(String text)
 Notification.show(String title, String message)               // -> void, fire-and-forget
 Notification.show(String title, String message, String iconPath)  // -> same, with a custom icon
 Notification.registerApp(String appId, String displayName, String exePath, String iconPath)
+
+AutoStart.enable(String appId, String displayName, String exePath)  // -> registers this app to launch at login
+AutoStart.disable(String appId)                                        // -> unregisters it
+AutoStart.isEnabled(String appId)                                      // -> whether it's currently registered
 ```
 
 `iconPath` (on `show`) is a local file path to a PNG/JPG (not an `.ico`) -
@@ -70,6 +74,19 @@ Notification.registerApp("com.example.myapp", "My App",
     ProcessHandle.current().info().command().orElse(null), iconPath);
 ```
 
+`AutoStart.enable`/`disable`/`isEnabled` are idempotent - safe to call every
+app startup (e.g. to sync a "Launch at login" setting toggle with what's
+actually registered):
+
+```java
+String exePath = ProcessHandle.current().info().command().orElse(null);
+if (userWantsAutoStart) {
+    AutoStart.enable("com.example.myapp", "My App", exePath);
+} else {
+    AutoStart.disable("com.example.myapp");
+}
+```
+
 Every `Dialogs` method also has an overload taking a native window handle as the first
 argument (e.g. `Dialogs.showMessage(long ownerHwnd, String title, String message)`) -
 pass `window.nativeHandle()` (see [`Window`](/guide/window)) to make the dialog an owned
@@ -81,13 +98,17 @@ menu item or other place that isn't already inside a request from that window's 
 ## How it's implemented
 
 Rather than binding each OS's native dialog/clipboard/notification API
-directly via FFM, these shell out to a small script per OS:
+directly via FFM, these shell out to a small script per OS. `AutoStart` is
+the exception - registering a startup entry is just a registry value
+(Windows) or a config file in a well-known location (macOS/Linux), so only
+its Windows path shells out at all; macOS/Linux write/delete the file
+directly via `java.nio.file`, and macOS additionally calls `launchctl`:
 
-| | Dialogs | Clipboard | Notification |
-|---|---|---|---|
-| Windows | PowerShell + `System.Windows.Forms` | PowerShell's `Get-Clipboard`/`Set-Clipboard` | PowerShell + WinRT's `Windows.UI.Notifications.ToastNotificationManager` |
-| macOS | `osascript` (AppleScript) | `pbcopy`/`pbpaste` | `osascript`'s `display notification` |
-| Linux | `zenity` | `xclip` (falls back to `xsel`) | `notify-send` |
+| | Dialogs | Clipboard | Notification | AutoStart |
+|---|---|---|---|---|
+| Windows | PowerShell + `System.Windows.Forms` | PowerShell's `Get-Clipboard`/`Set-Clipboard` | PowerShell + WinRT's `Windows.UI.Notifications.ToastNotificationManager` | PowerShell + the HKCU `Run` registry key |
+| macOS | `osascript` (AppleScript) | `pbcopy`/`pbpaste` | `osascript`'s `display notification` | a `LaunchAgents` plist + `launchctl load`/`unload` |
+| Linux | `zenity` | `xclip` (falls back to `xsel`) | `notify-send` | an XDG autostart `.desktop` file under `~/.config/autostart` |
 
 This is a deliberate trade-off, not a placeholder: Windows' native file
 dialog API (`comdlg32`'s `GetOpenFileNameW`/`GetSaveFileNameW`) takes a
@@ -100,11 +121,18 @@ process-spawn per call is the safer trade for something a user clicks
 occasionally, not a hot path.
 
 ::: warning Verified on Windows only
-The Windows path (dialogs, clipboard, and notifications) has been exercised
-end to end in a real running app. macOS (`osascript`/`pbcopy`/`pbpaste`) and
-Linux (`zenity`/`xclip`/`xsel`/`notify-send`) follow the same shape using
-each platform's standard, well-documented tools, but haven't been run on
-those OSes yet.
+The Windows path (dialogs, clipboard, notifications, and autostart) has been
+exercised end to end in a real running app. macOS (`osascript`/`pbcopy`/
+`pbpaste`/`LaunchAgents`/`launchctl`) and Linux (`zenity`/`xclip`/`xsel`/
+`notify-send`/XDG autostart) follow the same shape using each platform's
+standard, well-documented mechanisms, but haven't been run on those OSes yet.
+:::
+
+::: warning `AutoStart.isEnabled` on macOS/Linux only checks file existence
+It doesn't parse `launchctl list` or query a session manager - it just checks
+whether the plist/`.desktop` file `enable`/`disable` would write is present.
+Since those two methods always keep the file in sync with the registered
+state, this is accurate as long as nothing else touches the file by hand.
 :::
 
 ::: warning Without `registerApp`, notification toasts show "Windows PowerShell" as the sender name
