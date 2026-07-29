@@ -9,21 +9,45 @@ projects. This quickstart assumes you already have the sugr monorepo cloned.
 
 ## Prerequisites
 
-Run `sugr doctor` first - it checks everything below and tells you what's
-missing:
-
 - A GraalVM JDK (25+) - for `native-image` builds later. Any JDK 25 works for
   day-to-day development.
 - [Gradle](https://gradle.org/) (or just use the repo's `./gradlew`)
 - [Node.js](https://nodejs.org/) 20+ and [pnpm](https://pnpm.io/)
 
-Get the `sugr` binary itself - either download the prebuilt native binary
-(see the [repo README's CLI section](https://github.com/sugr-app/sugr#cli)
-for the one-line install script), or build it from this checkout:
+### Get the `sugr` CLI
+
+Download the prebuilt native binary from the latest
+[GitHub Release](https://github.com/sugr-app/sugr/releases) - no JVM, Gradle,
+or GraalVM install needed just to run the CLI itself:
+
+```sh
+# macOS (Apple Silicon only for now) / Linux
+curl -fsSL https://raw.githubusercontent.com/sugr-app/sugr/main/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/sugr-app/sugr/main/install.ps1 | iex
+```
+
+This installs to `~/.sugr/bin` (`%LOCALAPPDATA%\sugr\bin` on Windows) and
+adds it to your PATH - see [`install.sh`](https://github.com/sugr-app/sugr/blob/main/install.sh)
+for the full list of supported platforms, and
+[`.github/workflows/release.yml`](https://github.com/sugr-app/sugr/blob/main/.github/workflows/release.yml)
+for how each release's binaries are built.
+
+Or, if you're working from a checkout of this repo anyway (e.g. to build the
+prerequisites for the section below), build the CLI from source instead:
 
 ```sh
 ./gradlew :cli:installDist
-# add cli/build/install/sugr/bin to your PATH, then:
+# add cli/build/install/sugr/bin to your PATH
+```
+
+Either way, run `sugr doctor` next - it checks every prerequisite above and
+tells you what's missing:
+
+```sh
 sugr doctor
 ```
 
