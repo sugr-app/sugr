@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# IDE Java compile output (VS Code's Java extension compiles here by default)
+bin/
+
 # Native image / build outputs at repo root and example roots
 *.exe
 *.dll
