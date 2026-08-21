@@ -16,6 +16,7 @@ dependencies {
 
 application {
     mainClass = "com.sugr.examples.sqlclient.Main"
+    applicationName = "sugr - SQL client"
     applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 

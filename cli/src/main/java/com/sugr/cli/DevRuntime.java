@@ -11,6 +11,8 @@ import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +39,7 @@ final class DevRuntime {
     // check would never match at all.
     private static final Pattern DEV_URL_PATTERN = Pattern.compile("(https?://[^\\s\\x1B]+)");
     private static final long DEBOUNCE_MILLIS = 300;
+    private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final String frontendDir;
     private final String javaSrcDir;
@@ -65,7 +68,7 @@ final class DevRuntime {
             return 1;
         }
 
-        System.out.println("[sugr] starting Vite dev server in " + frontend + " ...");
+        log("[sugr] starting Vite dev server in " + frontend + " ...");
         Process vite = new ProcessBuilder(ProcessUtil.shellCommand("pnpm", "dev", "--mode", env))
                 .directory(frontend.toFile())
                 .redirectErrorStream(true)
@@ -77,7 +80,7 @@ final class DevRuntime {
             vite.destroy();
             return 1;
         }
-        System.out.println("[sugr] frontend ready at " + devUrl);
+        log("[sugr] frontend ready at " + devUrl);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             Process app = currentApp.get();
@@ -91,7 +94,7 @@ final class DevRuntime {
         if (Files.isDirectory(srcDir)) {
             watchAndRestartOnChange(srcDir);
         } else {
-            System.out.println("[sugr] " + srcDir + " doesn't exist - skipping Java restart-on-change, "
+            log("[sugr] " + srcDir + " doesn't exist - skipping Java restart-on-change, "
                     + "just running the app once.");
             Process app = currentApp.get();
             int exit = app != null ? app.waitFor() : 1;
@@ -101,7 +104,11 @@ final class DevRuntime {
         return 0;
     }
 
-    /** Kills the currently running app (if any) and starts a fresh one, rebuilding first. */
+    private static void log(String message) {
+        System.out.println("[" + LocalDateTime.now().format(TIME_FORMAT) + "] " + message);
+    }
+
+    /** Kills the currently running app and starts a fresh one, rebuilding first. */
     private void restartApp() throws IOException, InterruptedException {
         Process old = currentApp.getAndSet(null);
         if (old != null) {
@@ -109,27 +116,20 @@ final class DevRuntime {
             old.waitFor();
         }
 
-        // --no-daemon: the app's JVM is a genuine child of this process (killable via
-        // killTree above) instead of being forked by the long-lived Gradle Daemon, which
-        // isn't part of our process tree and survives a plain destroyForcibly() - that's
-        // what left orphaned app windows behind before this fix.
-        // --rerun-tasks: a plain JavaExec `run` task has no declared outputs, so it should
-        // never be considered up-to-date - but empirically, re-invoking the exact same
-        // task/args/classpath across separate `gradle` process launches (as every restart
-        // here does) sometimes gets treated as up-to-date anyway and silently skips
-        // actually launching the app. Forcing a rerun is the only way to guarantee restart
-        // always really restarts, which matters a lot more here than the extra checks cost.
+        // Using Gradle daemon (no --no-daemon) allows reusing existing idle daemons.
+        // --rerun-tasks ensures the app actually restarts on each change.
         List<String> gradleArgs = new ArrayList<>(List.of(
-                "gradle", located.task(), "--console=plain", "--no-daemon", "--rerun-tasks"));
+                "gradle", located.task(), "--console=plain", "--rerun-tasks"));
         gradleArgs.addAll(extraGradleArgs);
         ProcessBuilder appPb = new ProcessBuilder(ProcessUtil.shellCommand(gradleArgs.toArray(new String[0])));
         appPb.directory(located.gradleDir().toFile());
+        appPb.environment().put("JAVA_TOOL_OPTIONS", "-Xmx128m");
         appPb.environment().put("SUGR_DEV_URL", devUrl);
         appPb.environment().put("SUGR_ENV", env);
         appPb.environment().putAll(extraEnv);
         appPb.redirectErrorStream(true);
         appPb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-        System.out.println("[sugr] (re)building and starting the app (gradle " + located.task()
+        log("[sugr] (re)building and starting the app (gradle " + located.task()
                 + " from " + located.gradleDir() + ") ...");
         currentApp.set(appPb.start());
     }
@@ -138,7 +138,7 @@ final class DevRuntime {
     private void watchAndRestartOnChange(Path srcDir) throws IOException {
         try (WatchService watcher = FileSystems.getDefault().newWatchService()) {
             registerRecursive(srcDir, watcher);
-            System.out.println("[sugr] watching " + srcDir + " for changes ...");
+            log("[sugr] watching " + srcDir + " for changes ...");
 
             while (true) {
                 WatchKey key;
@@ -209,7 +209,7 @@ final class DevRuntime {
         String foundUrl = null;
         String line;
         while ((line = reader.readLine()) != null) {
-            System.out.println("[vite] " + line);
+            log("[vite] " + line);
             if (foundUrl == null) {
                 // Vite wraps each styled segment (including the port number) in its own
                 // ANSI escape codes, so the URL isn't contiguous in the raw line - strip
@@ -232,7 +232,7 @@ final class DevRuntime {
         try {
             String line;
             while ((line = reader.readLine()) != null) {
-                System.out.println("[vite] " + line);
+                log("[vite] " + line);
             }
         } catch (IOException ignored) {
             // vite process ended

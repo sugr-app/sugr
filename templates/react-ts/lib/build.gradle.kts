@@ -16,6 +16,7 @@ dependencies {
 
 application {
     mainClass = "app.__pkg__.Main"
+    applicationName = "__APP_NAME__"
     applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
