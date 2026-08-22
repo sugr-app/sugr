@@ -8,16 +8,12 @@ on:
       - '.github/workflows/docs.yml'
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
+  pages: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,15 +35,8 @@ jobs:
         run: pnpm docs:build
         working-directory: docs
 
-      - name: Clean docs folder and copy built files
-        run: |
-          rm -rf docs/*.md docs/guide docs/reference docs/how-it-works.md docs/index.md
-          cp -r docs/.vitepress/dist/* docs/
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: docs
-
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/.vitepress/dist
