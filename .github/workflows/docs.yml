@@ -39,10 +39,13 @@ jobs:
         run: pnpm docs:build
         working-directory: docs
 
+      - name: Copy to docs folder
+        run: cp -r docs/.vitepress/dist/* docs/
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/.vitepress/dist
+          path: docs
 
       - id: deployment
         uses: actions/deploy-pages@v4
