@@ -123,7 +123,7 @@ final class DevRuntime {
         gradleArgs.addAll(extraGradleArgs);
         ProcessBuilder appPb = new ProcessBuilder(ProcessUtil.shellCommand(gradleArgs.toArray(new String[0])));
         appPb.directory(located.gradleDir().toFile());
-        appPb.environment().put("JAVA_TOOL_OPTIONS", "-Xmx128m");
+        appPb.environment().put("JAVA_TOOL_OPTIONS", "-Xms32m -Xmx32m");
         appPb.environment().put("SUGR_DEV_URL", devUrl);
         appPb.environment().put("SUGR_ENV", env);
         appPb.environment().putAll(extraEnv);
