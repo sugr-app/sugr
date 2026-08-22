@@ -39,8 +39,10 @@ jobs:
         run: pnpm docs:build
         working-directory: docs
 
-      - name: Copy to docs folder
-        run: cp -r docs/.vitepress/dist/* docs/
+      - name: Clean docs folder and copy built files
+        run: |
+          rm -rf docs/*.md docs/guide docs/reference docs/how-it-works.md docs/index.md
+          cp -r docs/.vitepress/dist/* docs/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
