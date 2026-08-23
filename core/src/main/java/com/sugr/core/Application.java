@@ -146,8 +146,32 @@ public final class Application {
             return this;
         }
 
+        /** See {@link Window.Builder#splashScreen()}. */
+        public Builder splashScreen() {
+            windowBuilder.splashScreen();
+            return this;
+        }
+
+        /** See {@link Window.Builder#splashScreen(String)}. */
+        public Builder splashScreen(String html) {
+            windowBuilder.splashScreen(html);
+            return this;
+        }
+
         public Builder frontend(Frontend frontend) {
             windowBuilder.frontend(frontend);
+            return this;
+        }
+
+        /** See {@link Window.Builder#restoreWindowState}. */
+        public Builder restoreWindowState(boolean restore) {
+            windowBuilder.restoreWindowState(restore);
+            return this;
+        }
+
+        /** See {@link Window.Builder#appName}. */
+        public Builder appName(String appName) {
+            windowBuilder.appName(appName);
             return this;
         }
 
