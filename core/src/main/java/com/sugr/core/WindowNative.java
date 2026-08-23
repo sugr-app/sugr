@@ -69,8 +69,12 @@ final class WindowNative {
     private static final int LR_LOADFROMFILE = 0x0010;
     private static final long HWND_TOPMOST = -1L;
     private static final long HWND_NOTOPMOST = -2L;
+    private static final int SWP_NOSIZE = 0x0001;
     private static final int SWP_NOMOVE = 0x0002;
-    private static final int SWP_NOSIZE = 0x0004;
+    private static final int SWP_NOZORDER = 0x0004;
+    private static final int SWP_NOACTIVATE = 0x0010;
+    private static final int SWP_FRAMECHANGED = 0x0020;
+    private static final int SWP_SHOWWINDOW = 0x0040;
     private static final int MF_STRING = 0x00000000;
     private static final int MF_SEPARATOR = 0x00000800;
     private static final int MF_POPUP = 0x00000010;
@@ -96,10 +100,14 @@ final class WindowNative {
     private static final MethodHandle SEND_MESSAGE;
     private static final MethodHandle POST_MESSAGE;
     private static final MethodHandle SHOW_WINDOW;
+    private static final MethodHandle SET_FOREGROUND_WINDOW;
     private static final MethodHandle CREATE_MENU;
     private static final MethodHandle CREATE_POPUP_MENU;
     private static final MethodHandle APPEND_MENU;
     private static final MethodHandle SET_MENU;
+    private static final MethodHandle IS_ZOOMED;
+    private static final MethodHandle IS_ICONIC;
+    private static final MethodHandle GET_WINDOW_RECT;
     private static MemorySegment subclassTrampoline;
 
     static {
@@ -127,12 +135,20 @@ final class WindowNative {
                             ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG));
             SHOW_WINDOW = downcall("ShowWindow",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+            SET_FOREGROUND_WINDOW = downcall("SetForegroundWindow",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
             CREATE_MENU = downcall("CreateMenu", FunctionDescriptor.of(ValueLayout.ADDRESS));
             CREATE_POPUP_MENU = downcall("CreatePopupMenu", FunctionDescriptor.of(ValueLayout.ADDRESS));
             APPEND_MENU = downcall("AppendMenuW",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
             SET_MENU = downcall("SetMenu",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            IS_ZOOMED = downcall("IsZoomed",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+            IS_ICONIC = downcall("IsIconic",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+            GET_WINDOW_RECT = downcall("GetWindowRect",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         } else {
             LINKER = null;
@@ -145,10 +161,14 @@ final class WindowNative {
             SEND_MESSAGE = null;
             POST_MESSAGE = null;
             SHOW_WINDOW = null;
+            SET_FOREGROUND_WINDOW = null;
             CREATE_MENU = null;
             CREATE_POPUP_MENU = null;
             APPEND_MENU = null;
             SET_MENU = null;
+            IS_ZOOMED = null;
+            IS_ICONIC = null;
+            GET_WINDOW_RECT = null;
         }
     }
 
@@ -189,12 +209,131 @@ final class WindowNative {
 
     private static final int SW_HIDE = 0;
     private static final int SW_SHOW = 5;
+    private static final int SW_RESTORE = 9;
+    private static final int SW_MINIMIZE = 6;
+    private static final int SW_MAXIMIZE = 3;
+
+    // Window style flags and metrics
+    private static final int GWL_STYLE = -16;
+    private static final long WS_MAXIMIZEBOX = 0x00010000L;
+    private static final long WS_THICKFRAME = 0x00040000L;
 
     static void hide(MemorySegment hwnd) throws Throwable {
         if (!Os.isWindows()) {
             return;
         }
         SHOW_WINDOW.invoke(hwnd, SW_HIDE);
+    }
+
+    static void showWindow(MemorySegment hwnd, boolean visible) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        SHOW_WINDOW.invoke(hwnd, visible ? SW_SHOW : SW_HIDE);
+    }
+
+    static void minimize(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        SHOW_WINDOW.invoke(hwnd, SW_MINIMIZE);
+    }
+
+    static void maximize(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        SHOW_WINDOW.invoke(hwnd, SW_MAXIMIZE);
+    }
+
+    static void restore(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        SHOW_WINDOW.invoke(hwnd, SW_RESTORE);
+    }
+
+    /** Returns true if the window is currently maximized (Windows only). */
+    static boolean isMaximized(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return false;
+        }
+        return (int) IS_ZOOMED.invoke(hwnd) != 0;
+    }
+
+    /** Returns true if the window is currently minimized (Windows only). */
+    static boolean isMinimized(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return false;
+        }
+        return (int) IS_ICONIC.invoke(hwnd) != 0;
+    }
+
+    /**
+     * Toggles fullscreen by flipping the window style so it has no resize/maximize
+     * border, then expanding it over the whole monitor work area (fullscreen) or
+     * restoring its previous size (windowed). Windows only for now.
+     */
+    static void setFullscreen(MemorySegment hwnd, boolean fullscreen) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        long style = (long) GET_WINDOW_LONG_PTR.invoke(hwnd, GWL_STYLE);
+        long newStyle = fullscreen
+                ? style & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME
+                : style | WS_MAXIMIZEBOX | WS_THICKFRAME;
+        SET_WINDOW_LONG_PTR.invoke(hwnd, GWL_STYLE, newStyle);
+        // Refresh the chrome after the style change so the removed border actually applies.
+        SET_WINDOW_POS.invoke(hwnd, 0L, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOZORDER);
+        if (fullscreen) {
+            // Expand over the primary monitor's work area (excluding taskbar hacks aside).
+            SHOW_WINDOW.invoke(hwnd, SW_MAXIMIZE);
+        } else {
+            SHOW_WINDOW.invoke(hwnd, SW_RESTORE);
+        }
+    }
+
+    /** Returns the window's on-screen position as {x, y} (Windows only). */
+    static int[] getPosition(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return new int[] {0, 0};
+        }
+        MemorySegment rc = ARENA.allocate(16); // RECT: left, top, right, bottom (4 ints)
+        GET_WINDOW_RECT.invoke(hwnd, rc);
+        int left = rc.get(ValueLayout.JAVA_INT, 0);
+        int top = rc.get(ValueLayout.JAVA_INT, 4);
+        return new int[] {left, top};
+    }
+
+    /** Returns the window's outer size as {width, height} (Windows only). */
+    static int[] getSize(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return new int[] {0, 0};
+        }
+        MemorySegment rc = ARENA.allocate(16);
+        GET_WINDOW_RECT.invoke(hwnd, rc);
+        int left = rc.get(ValueLayout.JAVA_INT, 0);
+        int top = rc.get(ValueLayout.JAVA_INT, 4);
+        int right = rc.get(ValueLayout.JAVA_INT, 8);
+        int bottom = rc.get(ValueLayout.JAVA_INT, 12);
+        return new int[] {right - left, bottom - top};
+    }
+
+    /** Moves the window to {@code (x, y)} keeping its current size (Windows only). */
+    static void setPosition(MemorySegment hwnd, int x, int y) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        int[] size = getSize(hwnd);
+        SET_WINDOW_POS.invoke(hwnd, 0L, x, y, size[0], size[1], SWP_NOZORDER);
+    }
+
+    /** Resizes the window to {@code width}x{@code height} keeping its top-left corner (Windows only). */
+    static void setSize(MemorySegment hwnd, int width, int height) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        SET_WINDOW_POS.invoke(hwnd, 0L, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER);
     }
 
     /** Builds a native HMENU tree from {@code menu}, registering each item's action for WM_COMMAND dispatch. */
@@ -234,11 +373,20 @@ final class WindowNative {
         return MENU_ITEM_ACTIONS.get(id);
     }
 
+    /**
+     * Shows {@code hwnd} and brings it to the foreground. The plain {@code ShowWindow(SW_SHOW)}
+     * call alone makes the window visible but doesn't reliably restore foreground/activation -
+     * that only happens implicitly for a window's very first show, done internally by
+     * {@code webview_create()} itself. Callers re-showing a window that was briefly hidden
+     * (see {@link Window#open}'s hide-until-sized dance) need this explicit nudge, or the
+     * window comes back up behind whatever else has focus instead of on top like the first time.
+     */
     static void show(MemorySegment hwnd) throws Throwable {
         if (!Os.isWindows()) {
             return;
         }
         SHOW_WINDOW.invoke(hwnd, SW_SHOW);
+        SET_FOREGROUND_WINDOW.invoke(hwnd);
     }
 
     static void installSubclass(Window window, MemorySegment hwnd) throws Throwable {
