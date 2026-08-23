@@ -43,6 +43,9 @@ public final class Main {
         Application.Builder builder = Application.builder()
                 .title(config.getOrDefault("app.windowTitle", APP_NAME))
                 .size(700, 700)
+                .splashScreen()
+                .appName(APP_ID)
+                .restoreWindowState(true)
                 .frontend(Frontend.auto())
                 .menu(AppMenu.build(appRef, APP_ID, APP_NAME, exePath))
                 .onReady(app -> {

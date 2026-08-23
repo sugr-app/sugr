@@ -77,6 +77,59 @@ public final class Window {
             })();
             """;
 
+    /**
+     * Builds the init script that shows a full-viewport splash overlay (default spinner +
+     * app title, or {@link #splashHtml} if the app supplied its own) as early as possible -
+     * injected via {@code webview_init} like {@link #EVENTS_BOOTSTRAP_JS}, so it runs before
+     * the page's own content loads, on every navigation. It removes itself on the window's
+     * {@code load} event, which fires once the document and its sub-resources have finished
+     * loading - good enough for the common case without requiring the frontend to explicitly
+     * signal readiness.
+     */
+    private String buildSplashScript() {
+        String content = splashHtml != null ? splashHtml : defaultSplashHtml();
+        return """
+                (function () {
+                    function inject() {
+                        if (document.getElementById('__sugrSplash__')) return;
+                        var target = document.body || document.documentElement;
+                        if (!target) { setTimeout(inject, 0); return; }
+                        var el = document.createElement('div');
+                        el.id = '__sugrSplash__';
+                        el.style.cssText = 'position:fixed;inset:0;z-index:2147483647;' +
+                            'display:flex;align-items:center;justify-content:center;' +
+                            'flex-direction:column;background:#fff;';
+                        el.innerHTML = %s;
+                        target.appendChild(el);
+                    }
+                    inject();
+                    window.addEventListener('load', function () {
+                        var el = document.getElementById('__sugrSplash__');
+                        if (!el) return;
+                        el.style.transition = 'opacity 200ms ease';
+                        el.style.opacity = '0';
+                        setTimeout(function () { el.remove(); }, 220);
+                    });
+                })();
+                """.formatted(Json.quote(content));
+    }
+
+    private String defaultSplashHtml() {
+        return """
+                <style>
+                    #__sugrSplash__ .sugr-spinner {
+                        width: 32px; height: 32px; border-radius: 50%%;
+                        border: 3px solid rgba(0,0,0,0.15);
+                        border-top-color: rgba(0,0,0,0.55);
+                        animation: sugr-spin 0.8s linear infinite;
+                    }
+                    @keyframes sugr-spin { to { transform: rotate(360deg); } }
+                </style>
+                <div class="sugr-spinner"></div>
+                <div style="margin-top:16px;font:14px system-ui,sans-serif;color:#333;">%s</div>
+                """.formatted(title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"));
+    }
+
     @FunctionalInterface
     public interface ResizeListener {
         void onResize(Window window, int width, int height);
@@ -95,6 +148,8 @@ public final class Window {
     private final boolean alwaysOnTop;
     private final String iconPath;
     private final Menu menu;
+    private final boolean splashScreen;
+    private final String splashHtml;
     private final Frontend frontend;
     private final Bridge bridge;
     private final EventBus eventBus;
@@ -104,6 +159,9 @@ public final class Window {
     private final Consumer<Window> onFocus;
     private final Consumer<Window> onBlur;
     private final ResizeListener onResize;
+
+    private WindowStatePersistor windowStatePersistor;
+    private boolean windowStateRestored = false;
 
     private MemorySegment handle = MemorySegment.NULL;
     private MethodHandle webviewSetTitle;
@@ -137,6 +195,8 @@ public final class Window {
         this.alwaysOnTop = builder.alwaysOnTop;
         this.iconPath = builder.iconPath;
         this.menu = builder.menu;
+        this.splashScreen = builder.splashScreen;
+        this.splashHtml = builder.splashHtml;
         this.frontend = builder.frontend;
         this.bridge = builder.bridge;
         this.eventBus = builder.eventBus;
@@ -146,6 +206,9 @@ public final class Window {
         this.onFocus = builder.onFocus;
         this.onBlur = builder.onBlur;
         this.onResize = builder.onResize;
+        if (builder.restoreWindowState && builder.appName != null && !builder.appName.isBlank()) {
+            this.windowStatePersistor = new WindowStatePersistor(builder.appName);
+        }
     }
 
     static Window create(Builder builder, NativeLibrary webview, Arena arena, boolean isMain) throws Throwable {
@@ -204,6 +267,254 @@ public final class Window {
         WindowNative.requestClose(nativeWindow);
     }
 
+    /** Minimizes this window to the taskbar (Windows only - no-op elsewhere). Safe from any thread. */
+    public void minimize() {
+        runOnUi(this::nativeMinimize);
+    }
+
+    /** Maximizes this window (Windows only - no-op elsewhere). Safe from any thread. */
+    public void maximize() {
+        runOnUi(this::nativeMaximize);
+    }
+
+    /** Restores this window from minimized/maximized state (Windows only - no-op elsewhere). */
+    public void restore() {
+        runOnUi(this::nativeRestore);
+    }
+
+    /** Returns whether this window is currently maximized. */
+    public boolean isMaximized() {
+        return !Os.isWindows() ? false : nativeState(WindowNative::isMaximized);
+    }
+
+    /** Returns whether this window is currently minimized (hidden to taskbar). */
+    public boolean isMinimized() {
+        return !Os.isWindows() ? false : nativeState(WindowNative::isMinimized);
+    }
+
+    /** Toggles fullscreen mode on or off. Windows only for now. Safe from any thread. */
+    public void setFullscreen(boolean fullscreen) {
+        runOnUi(() -> nativeFullscreen(fullscreen));
+    }
+
+    /** Returns the window's on-screen position as {x, y} (Windows only - {0,0} elsewhere). */
+    public int[] position() {
+        return !Os.isWindows() ? new int[] {0, 0} : nativePosition();
+    }
+
+    /** Moves the window to {@code (x, y)}. Windows only for now. Safe from any thread. */
+    public void setPosition(int x, int y) {
+        runOnUi(() -> nativeSetPosition(x, y));
+    }
+
+    /** Returns the window's outer size as {width, height} (Windows only - {0,0} elsewhere). */
+    public int[] size() {
+        return !Os.isWindows() ? new int[] {0, 0} : nativeSize();
+    }
+
+    /** Resizes the window to {@code width}x{@code height}. Windows only for now. */
+    public void setSize(int width, int height) {
+        runOnUi(() -> nativeSetSize(width, height));
+    }
+
+    /** Sets whether this window stays above other windows at runtime. Windows only for now. */
+    public void setAlwaysOnTop(boolean alwaysOnTop) {
+        runOnUi(() -> nativeAlwaysOnTop(alwaysOnTop));
+    }
+
+    /** Hides this window from the taskbar/desktop (used for minimize-to-tray and splash-less startup). */
+    public void hide() {
+        runOnUi(this::nativeHide);
+    }
+
+    /** Shows this window again after {@link #hide()}. */
+    public void show() {
+        runOnUi(this::nativeShow);
+    }
+
+    /**
+     * Small sugar over {@link #hide()}: collapses the window to (and thus "into")
+     * the system tray by hiding it - the caller is expected to have created a
+     * {@link Tray} whose "Show" action calls {@link #show()} to bring it back.
+     * Windows-only in effect; a no-op elsewhere.
+     */
+    public void minimizeToTray() {
+        runOnUi(this::nativeHide);
+    }
+
+    /** Returns the underlying native window HWND wrapped as a {@link MemorySegment}, or NULL when not ready. */
+    MemorySegment nativeWindow() {
+        if (handle.equals(MemorySegment.NULL)) {
+            return MemorySegment.NULL;
+        }
+        try {
+            return (MemorySegment) webviewGetWindow.invoke(handle);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeMinimize() {
+        try {
+            WindowNative.minimize(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeMaximize() {
+        try {
+            WindowNative.maximize(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeRestore() {
+        try {
+            WindowNative.restore(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeFullscreen(boolean fullscreen) {
+        try {
+            WindowNative.setFullscreen(nativeWindow(), fullscreen);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private boolean nativeState(WindowStateQuery query) {
+        try {
+            return query.test(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private int[] nativePosition() {
+        try {
+            return WindowNative.getPosition(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeSetPosition(int x, int y) {
+        try {
+            WindowNative.setPosition(nativeWindow(), x, y);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private int[] nativeSize() {
+        try {
+            return WindowNative.getSize(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeSetSize(int width, int height) {
+        try {
+            WindowNative.setSize(nativeWindow(), width, height);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeAlwaysOnTop(boolean alwaysOnTop) {
+        try {
+            WindowNative.setAlwaysOnTop(nativeWindow(), alwaysOnTop);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeHide() {
+        try {
+            WindowNative.hide(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeShow() {
+        try {
+            WindowNative.show(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    @FunctionalInterface
+    private interface WindowStateQuery {
+        boolean test(MemorySegment hwnd) throws Throwable;
+    }
+
+    /** Runs {@code task} on the UI thread, preserving the module's runOnUiThread dispatch semantics. */
+    private void runOnUi(Runnable task) {
+        try {
+            uiDispatcher.runOnUiThread(() -> {
+                try {
+                    task.run();
+                } catch (Throwable t) {
+                    throw new RuntimeException(t);
+                }
+            });
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    /**
+     * Restores the window's last-session position/size/maximized state, if
+     * persistence is enabled and a previous state was saved. Runs inline during
+     * {@link #open()} - on the window's own creation/UI context, so native calls
+     * are safe without a further UI-thread hop.
+     */
+    private void restoreSavedWindowState() {
+        if (windowStatePersistor == null || windowStateRestored) {
+            return;
+        }
+        windowStateRestored = true;
+        WindowStatePersistor.State state = windowStatePersistor.load();
+        if (state == null) {
+            return;
+        }
+        try {
+            MemorySegment nativeWindow = nativeWindow();
+            WindowNative.setPosition(nativeWindow, state.x(), state.y());
+            WindowNative.setSize(nativeWindow, state.width(), state.height());
+            if (state.maximized()) {
+                WindowNative.maximize(nativeWindow);
+            }
+        } catch (Throwable t) {
+            System.err.println("[sugr] failed to restore window state:");
+            t.printStackTrace();
+        }
+    }
+
+    /** Persists the window's current bounds + maximized flag, if persistence is enabled. */
+    private void persistWindowState() {
+        if (windowStatePersistor == null) {
+            return;
+        }
+        try {
+            MemorySegment nativeWindow = nativeWindow();
+            int[] pos = WindowNative.getPosition(nativeWindow);
+            int[] size = WindowNative.getSize(nativeWindow);
+            boolean maximized = WindowNative.isMaximized(nativeWindow);
+            windowStatePersistor.save(pos[0], pos[1], size[0], size[1], maximized);
+        } catch (Throwable t) {
+            System.err.println("[sugr] failed to persist window state:");
+            t.printStackTrace();
+        }
+    }
+
     private void open() throws Throwable {
         MethodHandle webviewCreate = webview.downcall("webview_create",
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
@@ -237,9 +548,21 @@ public final class Window {
         }
         uiDispatcher = new UiDispatcher(webview, handle);
 
+        // webview_create() already shows the OS window - at whatever default size webview.dll
+        // gives it - before we get a chance to call applyChrome() below. Hiding it immediately
+        // and revealing it again only once applyChrome() has committed our actual size means
+        // the window's first-ever visible frame is already correctly sized, instead of
+        // flashing at the wrong size and then visibly snapping to the configured one.
+        MemorySegment nativeWindow = (MemorySegment) webviewGetWindow.invoke(handle);
+        WindowNative.hide(nativeWindow);
+
         webviewSetTitle.invoke(handle, arena.allocateFrom(title));
         applyChrome();
+        WindowNative.show(nativeWindow);
         webviewInit.invoke(handle, arena.allocateFrom(EVENTS_BOOTSTRAP_JS));
+        if (splashScreen) {
+            webviewInit.invoke(handle, arena.allocateFrom(buildSplashScript()));
+        }
 
         MemorySegment invokeStub = webview.upcall(MethodHandles.lookup(), this, "onInvoke",
                 MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
@@ -251,7 +574,6 @@ public final class Window {
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         webviewBind.invoke(handle, arena.allocateFrom("emit"), emitStub, MemorySegment.NULL);
 
-        MemorySegment nativeWindow = (MemorySegment) webviewGetWindow.invoke(handle);
         nativeWindowHandle = nativeWindow.address();
         WindowNative.installSubclass(this, nativeWindow);
 
@@ -263,6 +585,8 @@ public final class Window {
             }
         };
         webviewNavigate.invoke(handle, arena.allocateFrom(targetUrl));
+
+        restoreSavedWindowState();
 
         if (onReady != null) {
             onReady.accept(this);
@@ -281,7 +605,11 @@ public final class Window {
      * whole time and nudging its size once real layout is confirmed is a smaller, one-shot
      * correction instead of an open-ended guessing game - not perfectly invisible, but bounded
      * and reliable, which repeated guessing at delays was neither. Only matters for windows
-     * opened via {@link Application#openWindow} - the main window never had this problem.
+     * opened via {@link Application#openWindow} - {@link #open}'s own hide-until-{@link
+     * #applyChrome}-runs dance now gets the main window's size right before it's ever shown,
+     * so this nudge would only add a redundant, visible resize blip there (confirmed: turning
+     * it on for the main window as a first attempt at that same size-flash bug reintroduced
+     * a visible resize after open, right when the ready ping's nudge fired).
      */
     private void markWebviewReady() {
         if (webviewReady || isMain) {
@@ -352,6 +680,7 @@ public final class Window {
         if (onClosed != null) {
             onClosed.accept(this);
         }
+        persistWindowState();
         if (!isMain) {
             try {
                 WindowNative.runLater(this::destroyNative);
@@ -489,6 +818,8 @@ public final class Window {
         private boolean alwaysOnTop = false;
         private String iconPath;
         private Menu menu;
+        private boolean splashScreen = false;
+        private String splashHtml;
         private Frontend frontend = Frontend.embedded("/frontend");
         private final Bridge bridge = new Bridge();
         private final EventBus eventBus = new EventBus();
@@ -498,6 +829,8 @@ public final class Window {
         private Consumer<Window> onFocus;
         private Consumer<Window> onBlur;
         private ResizeListener onResize;
+        private boolean restoreWindowState = false;
+        private String appName;
 
         public Builder() {
         }
@@ -547,6 +880,25 @@ public final class Window {
         /** Sets this window's native menu bar. Windows only for now - a no-op elsewhere. */
         public Builder menu(Menu menu) {
             this.menu = menu;
+            return this;
+        }
+
+        /**
+         * Shows a splash overlay (default spinner + app title, on a white background) as
+         * soon as the window's content starts loading, hiding it automatically once the
+         * page finishes loading. Use {@link #splashScreen(String)} to supply your own HTML
+         * instead of the default spinner.
+         */
+        public Builder splashScreen() {
+            this.splashScreen = true;
+            this.splashHtml = null;
+            return this;
+        }
+
+        /** Like {@link #splashScreen()}, but {@code html} replaces the default spinner content. */
+        public Builder splashScreen(String html) {
+            this.splashScreen = true;
+            this.splashHtml = html;
             return this;
         }
 
@@ -615,6 +967,27 @@ public final class Window {
         /** Called when this window is resized (by the user dragging its edge, or maximized/restored). Windows only for now. */
         public Builder onResize(ResizeListener handler) {
             this.onResize = handler;
+            return this;
+        }
+
+        /**
+         * Enables restoring this window's position/size (and maximized state) from the
+         * last session on the next launch. The state is saved automatically when the
+         * window closes and restored when it opens. Requires {@link #appName} to be set
+         * so the state file has a stable home ({@link AppPaths}).
+         */
+        public Builder restoreWindowState(boolean restore) {
+            this.restoreWindowState = restore;
+            return this;
+        }
+
+        /**
+         * Sets the stable app identifier used to scope persisted state (e.g.
+         * {@code "sugr.examples.sqlclient"}). Only needed when
+         * {@link #restoreWindowState} is enabled - see {@link AppPaths#dataDir}.
+         */
+        public Builder appName(String appName) {
+            this.appName = appName;
             return this;
         }
     }
