@@ -4,6 +4,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 export default withMermaid(defineConfig({
   title: 'sugr',
   description: 'Build lightweight desktop apps with Java and web technologies.',
+  base: '/sugr/',
   cleanUrls: true,
 
   themeConfig: {
