@@ -146,6 +146,8 @@ public final class Window {
     private final Integer maxHeight;
     private final boolean resizable;
     private final boolean alwaysOnTop;
+    private final boolean darkTitleBar;
+    private final boolean customTitleBar;
     private final String iconPath;
     private final Menu menu;
     private final boolean splashScreen;
@@ -159,6 +161,8 @@ public final class Window {
     private final Consumer<Window> onFocus;
     private final Consumer<Window> onBlur;
     private final ResizeListener onResize;
+
+    private volatile java.util.function.Consumer<Boolean> onMaximizeChange;
 
     private WindowStatePersistor windowStatePersistor;
     private boolean windowStateRestored = false;
@@ -193,6 +197,8 @@ public final class Window {
         this.maxHeight = builder.maxHeight;
         this.resizable = builder.resizable;
         this.alwaysOnTop = builder.alwaysOnTop;
+        this.darkTitleBar = builder.darkTitleBar;
+        this.customTitleBar = builder.customTitleBar;
         this.iconPath = builder.iconPath;
         this.menu = builder.menu;
         this.splashScreen = builder.splashScreen;
@@ -322,6 +328,80 @@ public final class Window {
         runOnUi(() -> nativeAlwaysOnTop(alwaysOnTop));
     }
 
+    /**
+     * Tints the window's real native title bar (caption, icon, min/max/close) dark, or
+     * resets it back to the system default. Nothing about the frame itself changes - the
+     * title bar, menu bar, min/max/close, drag, resize, and the Windows 11 Snap Layouts
+     * flyout all stay 100% native; see {@link WindowNative#setDarkTitleBar} for why this
+     * is deliberately not a custom-drawn/frame-removed title bar. Windows 11 build 22000+
+     * only - a no-op elsewhere.
+     */
+    public void setDarkTitleBar(boolean dark) {
+        runOnUi(() -> nativeSetDarkTitleBar(dark));
+    }
+
+    /** Returns whether this window's title bar is currently tinted dark. */
+    public boolean isDarkTitleBar() {
+        return WindowNative.isDarkTitleBar(nativeWindow());
+    }
+
+    /** Returns whether this window's client area is currently extended into the caption - see {@link Builder#customTitleBar}. */
+    public boolean isCustomTitleBar() {
+        return WindowNative.isCustomTitleBar(nativeWindow());
+    }
+
+    /**
+     * Toggles the custom title bar at runtime - same effect as {@link Builder#customTitleBar}
+     * but callable after the window is already open (e.g. from a menu item, to compare native
+     * vs. custom live). Turning it off also hides the maximize button's snap overlay (see
+     * {@link #reportMaxButtonBounds}) - there's nothing for it to sit over once the native
+     * caption (and its own real maximize button) is back.
+     */
+    public void setCustomTitleBar(boolean enabled) {
+        runOnUi(() -> nativeSetCustomTitleBar(enabled));
+    }
+
+    /**
+     * Forwards a drag-to-move to the OS on behalf of a {@code mousedown} the frontend's own
+     * title bar received. Only meaningful with {@link Builder#customTitleBar} enabled - see
+     * {@link WindowNative#setCustomTitleBar}'s javadoc for why the frontend has to trigger
+     * this itself instead of it happening automatically. Safe from any thread.
+     */
+    public void startDrag() {
+        runOnUi(this::nativeStartDrag);
+    }
+
+    /**
+     * Reports where the frontend's custom-drawn maximize button currently is (physical
+     * pixels, relative to this window's client area - {@code rect.left/top/width/height *
+     * devicePixelRatio} from a {@code getBoundingClientRect()} reading is exactly this), so
+     * {@link WindowNative#createSnapOverlay}'s invisible overlay can be kept positioned over
+     * it. Only meaningful with {@link Builder#customTitleBar} enabled. Call it whenever the
+     * button might have moved or resized (layout/DPI/window-resize) - pass zero width/height
+     * to hide the overlay (e.g. before the frontend's first layout pass). Safe from any thread.
+     */
+    public void reportMaxButtonBounds(int x, int y, int width, int height) {
+        runOnUi(() -> nativeReportMaxButtonBounds(x, y, width, height));
+    }
+
+    /**
+     * Called directly (no {@link #runOnUi} hop needed - already running synchronously on
+     * the UI thread, inside the snap overlay's own WndProc dispatch) when a plain click
+     * lands on the maximize overlay without going through the Snap Layouts flyout.
+     */
+    void toggleMaximizeFromOverlay() {
+        try {
+            MemorySegment nativeWindow = nativeWindow();
+            if (WindowNative.isMaximized(nativeWindow)) {
+                WindowNative.restore(nativeWindow);
+            } else {
+                WindowNative.maximize(nativeWindow);
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
     /** Hides this window from the taskbar/desktop (used for minimize-to-tray and splash-less startup). */
     public void hide() {
         runOnUi(this::nativeHide);
@@ -433,6 +513,45 @@ public final class Window {
             throw new RuntimeException(t);
         }
     }
+
+    private void nativeSetDarkTitleBar(boolean dark) {
+        try {
+            WindowNative.setDarkTitleBar(nativeWindow(), dark);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeStartDrag() {
+        try {
+            WindowNative.startDrag(nativeWindow());
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeReportMaxButtonBounds(int x, int y, int width, int height) {
+        try {
+            WindowNative.setSnapOverlayBounds(nativeWindow(), x, y, width, height);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private void nativeSetCustomTitleBar(boolean enabled) {
+        try {
+            MemorySegment nativeWindow = nativeWindow();
+            WindowNative.setCustomTitleBar(nativeWindow, enabled);
+            if (enabled) {
+                WindowNative.createSnapOverlay(nativeWindow, this);
+            } else {
+                WindowNative.setSnapOverlayBounds(nativeWindow, 0, 0, 0, 0);
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
 
     private void nativeHide() {
         try {
@@ -638,6 +757,13 @@ public final class Window {
             }
         }
         MemorySegment nativeWindow = (MemorySegment) webviewGetWindow.invoke(handle);
+        if (darkTitleBar) {
+            WindowNative.setDarkTitleBar(nativeWindow, true);
+        }
+        if (customTitleBar) {
+            WindowNative.setCustomTitleBar(nativeWindow, true);
+            WindowNative.createSnapOverlay(nativeWindow, this);
+        }
         if (iconPath != null) {
             WindowNative.setIcon(nativeWindow, iconPath);
         }
@@ -715,6 +841,23 @@ public final class Window {
         if (onResize != null) {
             onResize.onResize(this, newWidth, newHeight);
         }
+    }
+
+    /**
+     * Called from the native WM_SIZE hook when the window transitions between
+     * maximized and restored - lets a custom title bar keep its maximize/restore
+     * icon in sync with native actions (snap layouts, taskbar, double-click).
+     */
+    void fireMaximizedChanged(boolean maximized) {
+        java.util.function.Consumer<Boolean> listener = onMaximizeChange;
+        if (listener != null) {
+            listener.accept(maximized);
+        }
+    }
+
+    /** Registers a callback fired when the window is maximized/restored natively. */
+    public void onMaximizeChange(java.util.function.Consumer<Boolean> listener) {
+        this.onMaximizeChange = listener;
     }
 
     /**
@@ -831,6 +974,8 @@ public final class Window {
         private ResizeListener onResize;
         private boolean restoreWindowState = false;
         private String appName;
+        private boolean darkTitleBar = false;
+        private boolean customTitleBar = false;
 
         public Builder() {
         }
@@ -988,6 +1133,32 @@ public final class Window {
          */
         public Builder appName(String appName) {
             this.appName = appName;
+            return this;
+        }
+
+        /**
+         * Tints the window's real native title bar dark from the moment it opens - see
+         * {@link Window#setDarkTitleBar}. Windows 11 build 22000+ only - a no-op elsewhere.
+         */
+        public Builder darkTitleBar() {
+            this.darkTitleBar = true;
+            return this;
+        }
+
+        /**
+         * Extends the client area into the caption so the frontend can draw its own title
+         * bar row instead of the native one - see {@link Window#startDrag} and {@link
+         * WindowNative#setCustomTitleBar}'s javadoc for what the frontend has to do itself
+         * (dragging - always; a real Snap Layouts hover flyout on a custom maximize button
+         * too, if the app also wires up {@link Window#reportMaxButtonBounds} and {@link
+         * WindowNative#createSnapOverlay}). The frame itself - shadow, rounded corners, Aero
+         * Snap, left/right/bottom resize border - stays fully native. Windows only for now -
+         * a no-op elsewhere. Not meaningful combined with a native {@link #menu}: the classic
+         * Win32 menu bar's own row isn't accounted for by this reclaim, so the two haven't
+         * been tested together and likely overlap.
+         */
+        public Builder customTitleBar() {
+            this.customTitleBar = true;
             return this;
         }
     }

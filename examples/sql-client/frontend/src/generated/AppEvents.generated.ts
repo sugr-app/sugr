@@ -6,4 +6,8 @@ export const AppEvents = {
     events.on<string>('menuLoadDb', listener)
     return () => events.off('menuLoadDb', listener)
   },
+  onCustomTitleBarChanged(listener: (payload: boolean) => void): () => void {
+    events.on<boolean>('customTitleBarChanged', listener)
+    return () => events.off('customTitleBarChanged', listener)
+  },
 }
