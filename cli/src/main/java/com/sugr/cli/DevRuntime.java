@@ -16,9 +16,11 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Shared dev-loop engine behind both `sugr dev` and `sugr debug`: starts the
@@ -59,6 +61,8 @@ final class DevRuntime {
     private volatile boolean shuttingDown = false;
     /** Vite's child processes captured at startup, before pnpm/cmd exit and orphan the node process - see {@link #stopVite}. */
     private final java.util.List<ProcessHandle> viteTree = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /** JVMs already hosting a webview when the dev session started - left alone by {@link #killAppWindow} so it only kills our own app. */
+    private volatile Set<Long> preexistingAppJvms = Set.of();
 
     DevRuntime(String frontendDir, String javaSrcDir, GradleProjectLocator.Result located,
                List<String> extraGradleArgs, Map<String, String> extraEnv, String env) {
@@ -97,10 +101,15 @@ final class DevRuntime {
         // would leave it running. These handles stay valid across the reparenting.
         vite.descendants().forEach(viteTree::add);
 
+        // Whatever webview-hosting JVMs are already up (another sugr app the user has open)
+        // are recorded now so Ctrl+C only ever kills the app *this* dev session launched.
+        preexistingAppJvms = webviewHostingJvms().map(ProcessHandle::pid).collect(Collectors.toSet());
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             shuttingDown = true;
-            Process app = currentApp.get();
-            if (app != null) killTree(app);
+            Process client = currentApp.get();
+            if (client != null) killTree(client);
+            killAppWindow();
             stopVite(vite);
         }));
 
@@ -111,7 +120,11 @@ final class DevRuntime {
             devLoopThread = Thread.currentThread();
             watchAndRestartOnChange(srcDir);
             // Fell out of the watch loop because the app was closed (see watchForAppExit) or
-            // Ctrl+C - either way we're done; stop Vite now rather than leaving it to the hook.
+            // Ctrl+C - either way we're done; tear everything down now rather than leaving it
+            // to the shutdown hook.
+            Process client = currentApp.get();
+            if (client != null) killTree(client);
+            killAppWindow();
             stopVite(vite);
             return 0;
         } else {
@@ -131,6 +144,44 @@ final class DevRuntime {
         vite.destroyForcibly();
     }
 
+    /**
+     * Force-kills the app window {@code sugr dev} launched, plus its descendants (webview,
+     * tray/shortcut helpers). {@code killTree(currentApp)} only reaches the {@code gradle
+     * ... run} client we spawned - the Gradle daemon forks the real app JVM as its own
+     * child, outside that tree - so without this, Ctrl+C on {@code sugr dev} would leave
+     * the window open. Scoped to JVMs that started hosting a webview *after* this dev
+     * session began ({@link #preexistingAppJvms}), so another sugr app the user has open
+     * is never touched.
+     */
+    private void killAppWindow() {
+        webviewHostingJvms()
+                .filter(h -> !preexistingAppJvms.contains(h.pid()))
+                .forEach(h -> {
+                    h.descendants().forEach(ProcessHandle::destroyForcibly);
+                    h.destroyForcibly();
+                });
+    }
+
+    /** Substrings identifying an OS webview helper process spawned as a child of a sugr app JVM. */
+    private static final List<String> WEBVIEW_CHILD_MARKERS =
+            List.of("msedgewebview2", "webkitwebprocess", "webkit.webcontent");
+
+    /** Every live JVM whose direct children include an OS webview helper - i.e. a running sugr app window. */
+    private static java.util.stream.Stream<ProcessHandle> webviewHostingJvms() {
+        return ProcessHandle.allProcesses().filter(h -> {
+            String cmd = h.info().command().orElse("").toLowerCase();
+            boolean isJava = cmd.endsWith("java.exe") || cmd.endsWith("javaw.exe")
+                    || cmd.endsWith("/java") || cmd.endsWith("/javaw");
+            if (!isJava) {
+                return false;
+            }
+            return h.children().anyMatch(c -> {
+                String child = c.info().command().orElse("").toLowerCase();
+                return WEBVIEW_CHILD_MARKERS.stream().anyMatch(child::contains);
+            });
+        });
+    }
+
     private static void log(String message) {
         System.out.println("[" + LocalDateTime.now().format(TIME_FORMAT) + "] " + message);
     }
@@ -141,6 +192,7 @@ final class DevRuntime {
         Process old = currentApp.getAndSet(null);
         if (old != null) {
             killTree(old);
+            killAppWindow(); // the daemon-forked window isn't under `old` - kill it too
             old.waitFor();
         }
 
