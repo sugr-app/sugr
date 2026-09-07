@@ -51,6 +51,15 @@ final class DevRuntime {
     private String devUrl;
     private final AtomicReference<Process> currentApp = new AtomicReference<>();
 
+    /** The thread blocked in {@link #watchAndRestartOnChange} - interrupted to end the dev loop. */
+    private volatile Thread devLoopThread;
+    /** True only while {@link #restartApp} is deliberately killing/replacing the app, so its exit isn't mistaken for the user closing the window. */
+    private volatile boolean restarting = false;
+    /** True once we're tearing down (Ctrl+C / app closed), so a late process exit doesn't re-trigger shutdown. */
+    private volatile boolean shuttingDown = false;
+    /** Vite's child processes captured at startup, before pnpm/cmd exit and orphan the node process - see {@link #stopVite}. */
+    private final java.util.List<ProcessHandle> viteTree = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     DevRuntime(String frontendDir, String javaSrcDir, GradleProjectLocator.Result located,
                List<String> extraGradleArgs, Map<String, String> extraEnv, String env) {
         this.frontendDir = frontendDir;
@@ -82,26 +91,44 @@ final class DevRuntime {
         }
         log("[sugr] frontend ready at " + devUrl);
 
+        // Snapshot Vite's child tree now, while the cmd -> pnpm -> node chain is still intact.
+        // pnpm/cmd exit almost immediately, orphaning the actual `node vite.js` process, and
+        // once that happens vite.descendants() no longer lists it - so a kill at shutdown time
+        // would leave it running. These handles stay valid across the reparenting.
+        vite.descendants().forEach(viteTree::add);
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            shuttingDown = true;
             Process app = currentApp.get();
             if (app != null) killTree(app);
-            killTree(vite);
+            stopVite(vite);
         }));
 
         restartApp();
 
         Path srcDir = Path.of(javaSrcDir).toAbsolutePath().normalize();
         if (Files.isDirectory(srcDir)) {
+            devLoopThread = Thread.currentThread();
             watchAndRestartOnChange(srcDir);
+            // Fell out of the watch loop because the app was closed (see watchForAppExit) or
+            // Ctrl+C - either way we're done; stop Vite now rather than leaving it to the hook.
+            stopVite(vite);
+            return 0;
         } else {
             log("[sugr] " + srcDir + " doesn't exist - skipping Java restart-on-change, "
                     + "just running the app once.");
             Process app = currentApp.get();
             int exit = app != null ? app.waitFor() : 1;
-            killTree(vite);
+            stopVite(vite);
             return exit;
         }
-        return 0;
+    }
+
+    /** Force-kills the Vite process plus every child captured at startup and any still-live descendant. */
+    private void stopVite(Process vite) {
+        vite.descendants().forEach(ProcessHandle::destroyForcibly);
+        viteTree.forEach(ProcessHandle::destroyForcibly);
+        vite.destroyForcibly();
     }
 
     private static void log(String message) {
@@ -110,6 +137,7 @@ final class DevRuntime {
 
     /** Kills the currently running app and starts a fresh one, rebuilding first. */
     private void restartApp() throws IOException, InterruptedException {
+        restarting = true;
         Process old = currentApp.getAndSet(null);
         if (old != null) {
             killTree(old);
@@ -131,10 +159,42 @@ final class DevRuntime {
         appPb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
         log("[sugr] (re)building and starting the app (gradle " + located.task()
                 + " from " + located.gradleDir() + ") ...");
-        currentApp.set(appPb.start());
+        Process app = appPb.start();
+        currentApp.set(app);
+        restarting = false;
+        watchForAppExit(app);
     }
 
-    /** Blocks, restarting the app each time a .java file under srcDir changes, until interrupted (Ctrl+C). */
+    /**
+     * Ends the dev loop when the app exits on its own - i.e. the user closed the window -
+     * so `sugr dev` returns to the shell instead of sitting in the file watcher forever.
+     * A non-zero exit (build failure, app crash) leaves the loop running so a fix + save
+     * still rebuilds; a restart we triggered ourselves is ignored via {@link #restarting}.
+     */
+    private void watchForAppExit(Process app) {
+        app.onExit().thenAccept(finished -> {
+            if (restarting || shuttingDown) {
+                return;
+            }
+            int code = finished.exitValue();
+            if (code != 0) {
+                log("[sugr] app exited (code " + code + ") - waiting for a change to rebuild ...");
+                return;
+            }
+            shuttingDown = true;
+            log("[sugr] app window closed - stopping dev server");
+            Thread loop = devLoopThread;
+            if (loop != null) {
+                loop.interrupt();
+            }
+        });
+    }
+
+    /**
+     * Blocks, restarting the app each time a .java file under srcDir changes. Returns when
+     * the thread is interrupted - by Ctrl+C, or by {@link #watchForAppExit} once the app
+     * window is closed.
+     */
     private void watchAndRestartOnChange(Path srcDir) throws IOException {
         try (WatchService watcher = FileSystems.getDefault().newWatchService()) {
             registerRecursive(srcDir, watcher);
