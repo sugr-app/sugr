@@ -5,6 +5,7 @@ import com.sugr.core.Application;
 import com.sugr.core.Frontend;
 import com.sugr.core.GlobalShortcut;
 import com.sugr.core.Notification;
+import com.sugr.core.Tray;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -54,6 +55,14 @@ public final class Main {
                     appRef.set(app);
                     windowControls.setWindow(app.mainWindow());
                     windowControls.setApplication(app);
+                    // "Window > Minimize to tray" just hides the window - without a tray icon
+                    // already present, there'd be no way to bring it back. Created here (once
+                    // the window exists) and kept for the whole run; its hosting process is
+                    // torn down on shutdown so it doesn't linger.
+                    Tray tray = AppTray.create(app.mainWindow());
+                    if (tray != null) {
+                        Runtime.getRuntime().addShutdownHook(new Thread(tray::close));
+                    }
                     // Same "load a DB file" action as the File menu item, but reachable even
                     // when the window isn't focused - see GlobalShortcut's javadoc. The
                     // returned handle is intentionally not closed: it should live for the
