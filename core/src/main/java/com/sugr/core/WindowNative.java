@@ -12,6 +12,7 @@ import java.lang.invoke.MethodType;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -63,6 +64,20 @@ final class WindowNative {
     private static final int WM_APP = 0x8000;
     private static final int WM_SUGR_DEFERRED = WM_APP + 1;
     private static final int WM_SETICON = 0x0080;
+    private static final int WM_NCCALCSIZE = 0x0083;
+    private static final int WM_NCHITTEST = 0x0084;
+    private static final int WM_NCLBUTTONDOWN = 0x00A1;
+    private static final int WM_NCLBUTTONUP = 0x00A2;
+    private static final int HTCAPTION = 2;
+    private static final int HTMAXBUTTON = 9;
+    private static final int SM_CXSIZEFRAME = 32;
+    private static final int SM_CYSIZEFRAME = 33;
+    private static final int SM_CXPADDEDBORDER = 92;
+    private static final int WS_CHILD = 0x40000000;
+    private static final int WS_EX_LAYERED = 0x00080000;
+    private static final int LWA_ALPHA = 0x2;
+    private static final int SWP_HIDEWINDOW = 0x0080;
+    private static final String SNAP_OVERLAY_CLASS_NAME = "SugrSnapOverlay";
     private static final int ICON_SMALL = 0;
     private static final int ICON_BIG = 1;
     private static final int IMAGE_ICON = 1;
@@ -82,6 +97,13 @@ final class WindowNative {
     private static final Arena ARENA = Arena.ofShared();
     private static final Map<Long, Window> HWND_TO_WINDOW = new ConcurrentHashMap<>();
     private static final Map<Long, Long> ORIGINAL_WNDPROC = new ConcurrentHashMap<>();
+    private static final Set<Long> DARK_TITLE_BAR_WINDOWS = ConcurrentHashMap.newKeySet();
+    private static final Set<Long> CUSTOM_TITLE_BAR_WINDOWS = ConcurrentHashMap.newKeySet();
+    private static final Map<Long, MemorySegment> WINDOW_MENUS = new ConcurrentHashMap<>();
+    /** Owning (top-level) window HWND address -> its snap overlay HWND address. */
+    private static final Map<Long, Long> SNAP_OVERLAYS = new ConcurrentHashMap<>();
+    /** Snap overlay HWND address -> the {@link Window} it toggles maximize/restore on. */
+    private static final Map<Long, Window> OVERLAY_OWNERS = new ConcurrentHashMap<>();
     private static final Queue<Runnable> PENDING_WORK = new ConcurrentLinkedQueue<>();
     private static final Map<Integer, Runnable> MENU_ITEM_ACTIONS = new ConcurrentHashMap<>();
     private static final java.util.concurrent.atomic.AtomicInteger NEXT_MENU_ITEM_ID =
@@ -92,6 +114,8 @@ final class WindowNative {
 
     private static final Linker LINKER;
     private static final SymbolLookup USER32;
+    private static final SymbolLookup DWMAPI;
+    private static final SymbolLookup KERNEL32;
     private static final MethodHandle GET_WINDOW_LONG_PTR;
     private static final MethodHandle SET_WINDOW_LONG_PTR;
     private static final MethodHandle CALL_WINDOW_PROC;
@@ -108,12 +132,27 @@ final class WindowNative {
     private static final MethodHandle IS_ZOOMED;
     private static final MethodHandle IS_ICONIC;
     private static final MethodHandle GET_WINDOW_RECT;
+    private static final MethodHandle DWM_SET_WINDOW_ATTRIBUTE;
+    private static final MethodHandle GET_SYSTEM_METRICS;
+    private static final MethodHandle RELEASE_CAPTURE;
+    private static final MethodHandle REGISTER_CLASS_EX;
+    private static final MethodHandle CREATE_WINDOW_EX;
+    private static final MethodHandle DESTROY_WINDOW;
+    private static final MethodHandle GET_MODULE_HANDLE;
+    private static final MethodHandle SET_LAYERED_WINDOW_ATTRIBUTES;
+    private static final MethodHandle DEF_WINDOW_PROC;
+    private static final MethodHandle DWM_DEF_WINDOW_PROC;
     private static MemorySegment subclassTrampoline;
+    private static MemorySegment overlayTrampoline;
+    private static MemorySegment overlayModuleHandle;
+    private static boolean overlayClassRegistered;
 
     static {
         if (Os.isWindows()) {
             LINKER = Linker.nativeLinker();
             USER32 = SymbolLookup.libraryLookup("user32.dll", ARENA);
+            DWMAPI = SymbolLookup.libraryLookup("dwmapi.dll", ARENA);
+            KERNEL32 = SymbolLookup.libraryLookup("kernel32.dll", ARENA);
             GET_WINDOW_LONG_PTR = downcall("GetWindowLongPtrW",
                     FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
             SET_WINDOW_LONG_PTR = downcall("SetWindowLongPtrW",
@@ -150,9 +189,38 @@ final class WindowNative {
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
             GET_WINDOW_RECT = downcall("GetWindowRect",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            DWM_SET_WINDOW_ATTRIBUTE = downcall(DWMAPI, "DwmSetWindowAttribute",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+            GET_SYSTEM_METRICS = downcall("GetSystemMetrics",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+            RELEASE_CAPTURE = downcall("ReleaseCapture",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT));
+            REGISTER_CLASS_EX = downcall("RegisterClassExW",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+            CREATE_WINDOW_EX = downcall("CreateWindowExW",
+                    FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            DESTROY_WINDOW = downcall("DestroyWindow",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+            GET_MODULE_HANDLE = downcall(KERNEL32, "GetModuleHandleW",
+                    FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            SET_LAYERED_WINDOW_ATTRIBUTES = downcall("SetLayeredWindowAttributes",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_BYTE, ValueLayout.JAVA_INT));
+            DEF_WINDOW_PROC = downcall("DefWindowProcW",
+                    FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG));
+            DWM_DEF_WINDOW_PROC = downcall(DWMAPI, "DwmDefWindowProc",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
         } else {
             LINKER = null;
             USER32 = null;
+            DWMAPI = null;
+            KERNEL32 = null;
             GET_WINDOW_LONG_PTR = null;
             SET_WINDOW_LONG_PTR = null;
             CALL_WINDOW_PROC = null;
@@ -169,11 +237,25 @@ final class WindowNative {
             IS_ZOOMED = null;
             IS_ICONIC = null;
             GET_WINDOW_RECT = null;
+            DWM_SET_WINDOW_ATTRIBUTE = null;
+            GET_SYSTEM_METRICS = null;
+            RELEASE_CAPTURE = null;
+            REGISTER_CLASS_EX = null;
+            CREATE_WINDOW_EX = null;
+            DESTROY_WINDOW = null;
+            GET_MODULE_HANDLE = null;
+            SET_LAYERED_WINDOW_ATTRIBUTES = null;
+            DEF_WINDOW_PROC = null;
+            DWM_DEF_WINDOW_PROC = null;
         }
     }
 
     private static MethodHandle downcall(String name, FunctionDescriptor descriptor) {
-        return LINKER.downcallHandle(USER32.find(name).orElseThrow(), descriptor);
+        return downcall(USER32, name, descriptor);
+    }
+
+    private static MethodHandle downcall(SymbolLookup lookup, String name, FunctionDescriptor descriptor) {
+        return LINKER.downcallHandle(lookup.find(name).orElseThrow(), descriptor);
     }
 
     private WindowNative() {
@@ -200,6 +282,170 @@ final class WindowNative {
         SET_WINDOW_POS.invoke(hwnd, insertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     }
 
+    /** Returns whether this window's caption is currently tinted dark via {@link #setDarkTitleBar}. */
+    static boolean isDarkTitleBar(MemorySegment hwnd) {
+        return DARK_TITLE_BAR_WINDOWS.contains(hwnd.address());
+    }
+
+    /**
+     * Tints the window's real native caption (title bar, icon, min/max/close) dark via
+     * {@code DwmSetWindowAttribute}'s {@code DWMWA_CAPTION_COLOR}/{@code DWMWA_TEXT_COLOR}
+     * (Windows 11 build 22000+ only - a no-op HRESULT failure on anything older, ignored).
+     *
+     * <p>Nothing about the frame itself changes: the caption, icon, title text, menu bar,
+     * min/max/close, drag, resize, and the Windows 11 Snap Layouts flyout are all still
+     * 100% native and DWM-owned - only their color is. This is deliberately <em>not</em> a
+     * custom-drawn or frame-removed title bar. An earlier version of this method instead cut
+     * the button cluster out of WebView2's own region (via {@code SetWindowRgn}) to hand-paint
+     * icons with GDI and hand-translate clicks to {@code WM_SYSCOMMAND}, so a custom HTML title
+     * bar could still put its own menu/drag region in the same row as real, Snap-Layout-capable
+     * buttons. That approach worked, but every native affordance in that row - the hover/press
+     * highlight, the Snap Layouts hover chevron - is owned by DWM and can't be suppressed
+     * without also losing it (a well-known limitation: even VS Code's own custom title bar
+     * can't get Snap Layouts - see microsoft/vscode#127449/#130495), so the highlight always
+     * shows through in its own colors regardless of what's hand-painted underneath. VS Code's
+     * <em>native</em> title bar mode gets a clean, on-theme look with none of that trade-off by
+     * doing exactly what this method does: leaving the caption itself alone and only recoloring
+     * it - so that's the approach here too.
+     */
+    static void setDarkTitleBar(MemorySegment hwnd, boolean dark) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        long hwndAddr = hwnd.address();
+        if (dark) {
+            DARK_TITLE_BAR_WINDOWS.add(hwndAddr);
+        } else {
+            DARK_TITLE_BAR_WINDOWS.remove(hwndAddr);
+        }
+        MemorySegment captionColor = ARENA.allocate(4);
+        MemorySegment textColor = ARENA.allocate(4);
+        captionColor.set(ValueLayout.JAVA_INT, 0, dark ? DARK_TITLE_BAR_CAPTION_COLOR : DWMWA_COLOR_DEFAULT);
+        textColor.set(ValueLayout.JAVA_INT, 0, dark ? DARK_TITLE_BAR_TEXT_COLOR : DWMWA_COLOR_DEFAULT);
+        DWM_SET_WINDOW_ATTRIBUTE.invoke(hwnd, DWMWA_CAPTION_COLOR, captionColor, 4);
+        DWM_SET_WINDOW_ATTRIBUTE.invoke(hwnd, DWMWA_TEXT_COLOR, textColor, 4);
+        // Nudge DWM to repaint the non-client area now that the color changed, without actually
+        // moving or resizing the window.
+        SET_WINDOW_POS.invoke(hwnd, 0L, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOZORDER);
+    }
+
+    /** Returns whether this window's caption is currently extended into the client area via {@link #setCustomTitleBar}. */
+    static boolean isCustomTitleBar(MemorySegment hwnd) {
+        return CUSTOM_TITLE_BAR_WINDOWS.contains(hwnd.address());
+    }
+
+    /**
+     * Extends the client area into the caption (so frontend content can draw its own title
+     * bar row) while leaving the frame itself - {@code WS_CAPTION}/{@code WS_THICKFRAME} and
+     * everything DWM does with them (shadow, rounded corners, Aero Snap edge-drag, resize
+     * border on the left/right/bottom) - untouched; see the {@code WM_NCCALCSIZE} case in
+     * {@link #onWndProc} for how the reclaimed area is computed. Two things a real native
+     * caption gives you for free don't come along for the ride and have to be replaced by the
+     * frontend:
+     *
+     * <ul>
+     *   <li>Dragging the window - the reclaimed area is covered by WebView2's own child HWND,
+     *       so {@code WM_NCHITTEST} on this window never even sees clicks there (input is
+     *       routed to the topmost window under the cursor, i.e. the child). The frontend must
+     *       call {@link #startDrag} itself from a {@code mousedown} handler on its title bar.
+     *   <li>The Windows 11 Snap Layouts hover flyout on a custom-drawn maximize button - same
+     *       root cause ({@code WM_NCHITTEST}'s {@code HTMAXBUTTON} never reaches this window
+     *       either). Not a dead end though: {@link #createSnapOverlay} gets it back via a tiny
+     *       invisible native window stacked over the button, the same technique Tauri's
+     *       {@code tauri-plugin-frame} uses - see its javadoc. Without that overlay (e.g. an
+     *       app that only calls {@code setCustomTitleBar}), clicking the button still maximizes
+     *       normally - see {@code AppMenu}/{@code WindowControls} - just without the hover
+     *       preview, the trade-off VS Code, Discord, and Spotify's own custom title bars make
+     *       (see {@link #setDarkTitleBar}'s javadoc for the related Snap-Layouts caveat).
+     * </ul>
+     */
+    static void setCustomTitleBar(MemorySegment hwnd, boolean enabled) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        if (enabled) {
+            CUSTOM_TITLE_BAR_WINDOWS.add(hwnd.address());
+        } else {
+            CUSTOM_TITLE_BAR_WINDOWS.remove(hwnd.address());
+        }
+        // Force WM_NCCALCSIZE to run again with the new setting, without actually moving/resizing.
+        SET_WINDOW_POS.invoke(hwnd, 0L, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED | SWP_NOZORDER);
+    }
+
+    /**
+     * Forwards a drag-to-move to the OS on behalf of a click the frontend's own title bar
+     * received (see {@link #setCustomTitleBar}'s javadoc for why this can't happen
+     * automatically). Mirrors what WebView2's own {@code app-region: drag} support does
+     * internally, and what every pre-app-region Electron/CEF app did by hand: release the
+     * capture WebView2 already took for the mousedown, then feed the OS a synthetic
+     * "the user just pressed down on the caption" message so it drives the rest of the drag
+     * (including Aero Snap edge-docking and dragging back down out of maximized) exactly as
+     * it would for a real native caption.
+     */
+    static void startDrag(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        RELEASE_CAPTURE.invoke();
+        SEND_MESSAGE.invoke(hwnd, WM_NCLBUTTONDOWN, (long) HTCAPTION, 0L);
+    }
+
+    /**
+     * Creates (once per window) an invisible native child window stacked over
+     * {@code parentHwnd}'s custom-drawn maximize button, so hovering/clicking it gets a
+     * real Windows 11 Snap Layouts flyout - something a custom-drawn HTML button alone
+     * can never get (see {@link #setCustomTitleBar}'s javadoc for why). Same technique as
+     * Tauri's {@code tauri-plugin-frame}: since the overlay is a genuine top-of-z-order
+     * HWND rather than pixels painted by WebView2, {@code WM_NCHITTEST} reaches <em>it</em>
+     * directly instead of being swallowed by the WebView2 child underneath, so it can
+     * answer {@code HTMAXBUTTON} itself. Starts at zero size/hidden - {@link
+     * #setSnapOverlayBounds} positions it once the frontend reports where its button
+     * actually is.
+     */
+    static void createSnapOverlay(MemorySegment parentHwnd, Window owner) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        long parentAddr = parentHwnd.address();
+        if (SNAP_OVERLAYS.containsKey(parentAddr)) {
+            return;
+        }
+        ensureOverlayClass();
+        MemorySegment overlay = (MemorySegment) CREATE_WINDOW_EX.invoke(
+                WS_EX_LAYERED, ARENA.allocateFrom(SNAP_OVERLAY_CLASS_NAME, StandardCharsets.UTF_16LE),
+                MemorySegment.NULL, WS_CHILD, 0, 0, 0, 0, parentHwnd, MemorySegment.NULL,
+                overlayModuleHandle, MemorySegment.NULL);
+        if (overlay.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("CreateWindowExW failed for the snap overlay");
+        }
+        // Fully transparent (alpha 0) but NOT WS_EX_TRANSPARENT - that would let hit-testing
+        // (and thus the whole point of this window) pass through to the WebView2 below it.
+        SET_LAYERED_WINDOW_ATTRIBUTES.invoke(overlay, 0, (byte) 0, LWA_ALPHA);
+        SNAP_OVERLAYS.put(parentAddr, overlay.address());
+        OVERLAY_OWNERS.put(overlay.address(), owner);
+    }
+
+    /**
+     * Repositions {@code parentHwnd}'s snap overlay to match its maximize button's current
+     * on-screen rect (physical pixels, relative to the parent's client area - exactly what
+     * a DPI-aware {@code getBoundingClientRect()} reading times {@code devicePixelRatio}
+     * gives you, since the reclaimed client area's origin is the window's own top-left).
+     * Hides the overlay if {@code width}/{@code height} is zero (e.g. before the frontend's
+     * first layout pass). No-ops if {@link #createSnapOverlay} hasn't been called yet.
+     */
+    static void setSnapOverlayBounds(MemorySegment parentHwnd, int x, int y, int width, int height) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        Long overlayAddr = SNAP_OVERLAYS.get(parentHwnd.address());
+        if (overlayAddr == null) {
+            return;
+        }
+        MemorySegment overlay = MemorySegment.ofAddress(overlayAddr);
+        int visibilityFlag = width > 0 && height > 0 ? SWP_SHOWWINDOW : SWP_HIDEWINDOW;
+        SET_WINDOW_POS.invoke(overlay, 0L, x, y, width, height, SWP_NOZORDER | visibilityFlag);
+    }
+
     static void requestClose(MemorySegment hwnd) throws Throwable {
         if (!Os.isWindows()) {
             return;
@@ -217,6 +463,14 @@ final class WindowNative {
     private static final int GWL_STYLE = -16;
     private static final long WS_MAXIMIZEBOX = 0x00010000L;
     private static final long WS_THICKFRAME = 0x00040000L;
+
+    // COLORREF format (0x00BBGGRR). There's no way to read the frontend's CSS from native code,
+    // so these are just a reasonable dark-title-bar default, not synced with any app's theme.
+    private static final int DARK_TITLE_BAR_TEXT_COLOR = 0x00E8E8E8;
+    private static final int DARK_TITLE_BAR_CAPTION_COLOR = 0x002D2D2D;
+    private static final int DWMWA_CAPTION_COLOR = 35;
+    private static final int DWMWA_TEXT_COLOR = 36;
+    private static final int DWMWA_COLOR_DEFAULT = -1; // 0xFFFFFFFF as a signed 32-bit int
 
     static void hide(MemorySegment hwnd) throws Throwable {
         if (!Os.isWindows()) {
@@ -365,6 +619,7 @@ final class WindowNative {
         if (!Os.isWindows()) {
             return;
         }
+        WINDOW_MENUS.put(hwnd.address(), hMenu);
         SET_MENU.invoke(hwnd, hMenu);
     }
 
@@ -431,6 +686,48 @@ final class WindowNative {
                 ARENA);
     }
 
+    private static synchronized void ensureOverlayTrampoline() throws Throwable {
+        if (overlayTrampoline != null) {
+            return;
+        }
+        MethodHandle target = MethodHandles.lookup().findStatic(WindowNative.class, "onOverlayWndProc",
+                MethodType.methodType(long.class, MemorySegment.class, int.class, long.class, long.class));
+        overlayTrampoline = LINKER.upcallStub(target,
+                FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG),
+                ARENA);
+    }
+
+    /** Registers {@link #SNAP_OVERLAY_CLASS_NAME} once per process - see {@link #createSnapOverlay}. */
+    private static synchronized void ensureOverlayClass() throws Throwable {
+        if (overlayClassRegistered) {
+            return;
+        }
+        ensureOverlayTrampoline();
+        overlayModuleHandle = (MemorySegment) GET_MODULE_HANDLE.invoke(MemorySegment.NULL);
+        // WNDCLASSEXW (x64 layout, 80 bytes): cbSize:4 style:4 lpfnWndProc:8 cbClsExtra:4
+        // cbWndExtra:4 hInstance:8 hIcon:8 hCursor:8 hbrBackground:8 lpszMenuName:8
+        // lpszClassName:8 hIconSm:8 - fields after the two ints at offset 16/20 realign to
+        // 8 naturally since 24 is already a multiple of 8, no manual padding needed.
+        MemorySegment wndClass = ARENA.allocate(80);
+        wndClass.set(ValueLayout.JAVA_INT, 0, 80);
+        wndClass.set(ValueLayout.JAVA_INT, 4, 0);
+        wndClass.set(ValueLayout.ADDRESS, 8, overlayTrampoline);
+        wndClass.set(ValueLayout.JAVA_INT, 16, 0);
+        wndClass.set(ValueLayout.JAVA_INT, 20, 0);
+        wndClass.set(ValueLayout.ADDRESS, 24, overlayModuleHandle);
+        wndClass.set(ValueLayout.ADDRESS, 32, MemorySegment.NULL);
+        wndClass.set(ValueLayout.ADDRESS, 40, MemorySegment.NULL);
+        wndClass.set(ValueLayout.ADDRESS, 48, MemorySegment.NULL);
+        wndClass.set(ValueLayout.ADDRESS, 56, MemorySegment.NULL);
+        wndClass.set(ValueLayout.ADDRESS, 64, ARENA.allocateFrom(SNAP_OVERLAY_CLASS_NAME, StandardCharsets.UTF_16LE));
+        wndClass.set(ValueLayout.ADDRESS, 72, MemorySegment.NULL);
+        if ((int) REGISTER_CLASS_EX.invoke(wndClass) == 0) {
+            throw new IllegalStateException("RegisterClassExW failed for the snap overlay window class");
+        }
+        overlayClassRegistered = true;
+    }
+
     /** Shared WndProc for every subclassed window - looks up which {@link Window} owns {@code hwnd}. */
     private static long onWndProc(MemorySegment hwnd, int msg, long wParam, long lParam) {
         long hwndAddr = hwnd.address();
@@ -452,12 +749,54 @@ final class WindowNative {
                     window.fireClosed();
                     HWND_TO_WINDOW.remove(hwndAddr);
                     ORIGINAL_WNDPROC.remove(hwndAddr);
+                    DARK_TITLE_BAR_WINDOWS.remove(hwndAddr);
+                    CUSTOM_TITLE_BAR_WINDOWS.remove(hwndAddr);
+                    WINDOW_MENUS.remove(hwndAddr);
+                    Long overlayAddr = SNAP_OVERLAYS.remove(hwndAddr);
+                    if (overlayAddr != null) {
+                        OVERLAY_OWNERS.remove(overlayAddr);
+                        // The overlay is a child of this HWND, so DestroyWindow on the parent
+                        // would already tear it down - this just avoids relying on that order.
+                        try {
+                            DESTROY_WINDOW.invoke(MemorySegment.ofAddress(overlayAddr));
+                        } catch (Throwable ignored) {
+                            // best-effort - the parent's own destruction cleans it up regardless
+                        }
+                    }
                     return result;
+                }
+                case WM_NCCALCSIZE -> {
+                    if (wParam == 0 || !CUSTOM_TITLE_BAR_WINDOWS.contains(hwndAddr)) {
+                        return callOriginal(originalProc, hwnd, msg, wParam, lParam);
+                    }
+                    // NCCALCSIZE_PARAMS.rgrc[0]: the proposed window rect on the way in, the
+                    // computed client rect on the way out. RECT is {left, top, right, bottom}
+                    // as 4 LONGs, so rgrc[0].top is byte offset 4.
+                    MemorySegment params = MemorySegment.ofAddress(lParam).reinterpret(56);
+                    int proposedTop = params.get(ValueLayout.JAVA_INT, 4);
+                    // Let the default handler compute the normal client rect first (correct
+                    // left/right/bottom resize-border insets, and - critically - the extra
+                    // maximized-state inset that keeps a maximized window from overhanging the
+                    // monitor edges) before overwriting just the top back to reclaim the caption.
+                    callOriginal(originalProc, hwnd, msg, wParam, lParam);
+                    if ((int) IS_ZOOMED.invoke(hwnd) != 0) {
+                        int frameY = (int) GET_SYSTEM_METRICS.invoke(SM_CYSIZEFRAME)
+                                + (int) GET_SYSTEM_METRICS.invoke(SM_CXPADDEDBORDER);
+                        params.set(ValueLayout.JAVA_INT, 4, proposedTop + frameY);
+                    } else {
+                        params.set(ValueLayout.JAVA_INT, 4, proposedTop);
+                    }
+                    return 0;
                 }
                 case WM_SIZE -> {
                     int newWidth = (int) (lParam & 0xFFFF);
                     int newHeight = (int) ((lParam >> 16) & 0xFFFF);
                     window.fireResized(newWidth, newHeight);
+                    // wParam is SIZE_MAXIMIZED (2) / SIZE_RESTORED (0).
+                    long sizeType = wParam;
+                    if (sizeType == 2 || sizeType == 0) {
+                        window.fireMaximizedChanged(sizeType == 2);
+                    }
                     return callOriginal(originalProc, hwnd, msg, wParam, lParam);
                 }
                 case WM_SETFOCUS -> {
@@ -519,4 +858,42 @@ final class WindowNative {
     private static long callOriginal(long originalProc, MemorySegment hwnd, int msg, long wParam, long lParam) throws Throwable {
         return (long) CALL_WINDOW_PROC.invoke(MemorySegment.ofAddress(originalProc), hwnd, msg, wParam, lParam);
     }
+
+    /**
+     * WndProc for every snap overlay window created by {@link #createSnapOverlay} - a tiny,
+     * fully transparent child window is the only reliable way to get {@code WM_NCHITTEST}
+     * for a custom maximize button, since the WebView2 child covering the rest of the
+     * client area answers it for itself first (see {@link #setCustomTitleBar}'s javadoc).
+     * Follows the same "ask DWM first" order Microsoft's own custom-title-bar sample uses:
+     * {@code DwmDefWindowProc} gets first look at every message (it owns the actual Snap
+     * Layouts flyout - hover chevron, popup, keyboard nav); only once it declines does this
+     * answer {@code WM_NCHITTEST} itself (unconditionally {@code HTMAXBUTTON} - the whole
+     * overlay <em>is</em> the button, no coordinate math needed) or, for a plain click that
+     * didn't go through the flyout, forward to {@link Window#toggleMaximizeFromOverlay}.
+     */
+    private static long onOverlayWndProc(MemorySegment hwnd, int msg, long wParam, long lParam) {
+        try {
+            MemorySegment dwmResult = ARENA.allocate(ValueLayout.JAVA_LONG);
+            boolean dwmHandled = (int) DWM_DEF_WINDOW_PROC.invoke(hwnd, msg, wParam, lParam, dwmResult) != 0;
+            if (msg == WM_NCHITTEST) {
+                return dwmHandled ? dwmResult.get(ValueLayout.JAVA_LONG, 0) : HTMAXBUTTON;
+            }
+            if (dwmHandled) {
+                return dwmResult.get(ValueLayout.JAVA_LONG, 0);
+            }
+            if (msg == WM_NCLBUTTONUP && wParam == HTMAXBUTTON) {
+                Window owner = OVERLAY_OWNERS.get(hwnd.address());
+                if (owner != null) {
+                    owner.toggleMaximizeFromOverlay();
+                }
+                return 0;
+            }
+            return (long) DEF_WINDOW_PROC.invoke(hwnd, msg, wParam, lParam);
+        } catch (Throwable t) {
+            System.err.println("[sugr] snap overlay WndProc failed:");
+            t.printStackTrace();
+            return 0;
+        }
+    }
+
 }

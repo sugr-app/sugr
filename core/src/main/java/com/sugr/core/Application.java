@@ -175,6 +175,18 @@ public final class Application {
             return this;
         }
 
+        /** See {@link Window.Builder#darkTitleBar}. */
+        public Builder darkTitleBar() {
+            windowBuilder.darkTitleBar();
+            return this;
+        }
+
+        /** See {@link Window.Builder#customTitleBar}. */
+        public Builder customTitleBar() {
+            windowBuilder.customTitleBar();
+            return this;
+        }
+
         /**
          * Registers a raw JSON handler for {@code method} directly, bypassing the
          * {@code @Bind}/processor codegen path entirely. Prefer {@code @Bind} - it

@@ -7,6 +7,7 @@ import com.sugr.core.Menu;
 import com.sugr.core.Notification;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The app's native menu bar - File (load a DB file, reload, quit), Settings
@@ -28,6 +29,10 @@ final class AppMenu {
      * @param exePath the executable to launch at login - see {@link AutoStart#enable}
      */
     static Menu build(AtomicReference<Application> appRef, String appId, String displayName, String exePath) {
+        AtomicBoolean fullscreen = new AtomicBoolean(false);
+        AtomicBoolean alwaysOnTop = new AtomicBoolean(false);
+        AtomicBoolean darkTitleBar = new AtomicBoolean(false);
+        AtomicBoolean customTitleBar = new AtomicBoolean(false);
         return new Menu()
                 .submenu("File", new Menu()
                         .item("Load DB file...", () -> loadDbFile(appRef.get()))
@@ -37,6 +42,31 @@ final class AppMenu {
                         .item("Quit", () -> System.exit(0)))
                 .submenu("Settings", new Menu()
                         .item("Toggle launch at login", () -> toggleAutoStart(appId, displayName, exePath)))
+                .submenu("Window", new Menu()
+                        .item("Toggle fullscreen", () -> {
+                            Application app = appRef.get();
+                            app.mainWindow().setFullscreen(fullscreen.getAndSet(!fullscreen.get()));
+                        })
+                        .item("Toggle always on top", () -> {
+                            Application app = appRef.get();
+                            app.mainWindow().setAlwaysOnTop(alwaysOnTop.getAndSet(!alwaysOnTop.get()));
+                        })
+                        .item("Toggle dark title bar", () -> {
+                            Application app = appRef.get();
+                            boolean next = darkTitleBar.getAndSet(!darkTitleBar.get());
+                            app.mainWindow().setDarkTitleBar(next);
+                        })
+                        .item("Toggle custom title bar", () -> {
+                            Application app = appRef.get();
+                            boolean next = customTitleBar.getAndSet(!customTitleBar.get());
+                            app.mainWindow().setCustomTitleBar(next);
+                            new AppEventsEmitter(app.mainWindow()).customTitleBarChanged(next);
+                        })
+                        .separator()
+                        .item("Minimize", () -> appRef.get().mainWindow().minimize())
+                        .item("Maximize", () -> appRef.get().mainWindow().maximize())
+                        .item("Restore", () -> appRef.get().mainWindow().restore())
+                        .item("Minimize to tray", () -> appRef.get().mainWindow().minimizeToTray()))
                 .submenu("Help", new Menu()
                         .item("About", () -> {
                             Application app = appRef.get();
