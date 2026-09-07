@@ -25,7 +25,20 @@ public final class Main implements Runnable {
 
     public static void main(String[] args) {
         int exitCode = new CommandLine(new Main()).execute(args);
+        printSponsorNote();
         System.exit(exitCode);
+    }
+
+    /**
+     * Printed once when a command finishes (dev, build, package, doctor, ...) - the same
+     * ask as the README's Sponsor section. For a long-running command like {@code sugr
+     * dev} that means it shows when the app is closed. Goes to stderr so it never mixes
+     * into stdout that a script might be parsing (e.g. {@code sugr -v}).
+     */
+    private static void printSponsorNote() {
+        System.err.println();
+        System.err.println("If Sugr is useful to you or your company, please consider sponsoring the project:");
+        System.err.println("  https://github.com/sugr-app/sugr");
     }
 
     @Override
