@@ -601,7 +601,7 @@ public final class Window {
         }
         windowStateRestored = true;
         WindowStatePersistor.State state = windowStatePersistor.load();
-        if (state == null) {
+        if (state == null || !isRestorableWindowState(state)) {
             return;
         }
         try {
@@ -617,6 +617,32 @@ public final class Window {
         }
     }
 
+    /**
+     * The smallest window a restored state is allowed to describe. A minimized window
+     * reports a bogus {@code {-32000, -32000}} origin at a caption-sized rect via
+     * {@code GetWindowRect}; anything near that (or otherwise unusably small) is treated
+     * as garbage so the window falls back to its configured size/position instead.
+     */
+    private static final int MIN_RESTORABLE_WINDOW_DIMENSION = 200;
+
+    /** The classic off-screen origin {@code GetWindowRect} hands back for a minimized window. */
+    private static final int MINIMIZED_WINDOW_SENTINEL_COORD = -30000;
+
+    /**
+     * Rejects a saved state that would open the window invisibly small or off every
+     * screen - most often the minimized-window rect (see {@link #persistWindowState},
+     * which now avoids saving it in the first place, but old state files can still
+     * carry one), also a state saved on a monitor that's since been disconnected.
+     */
+    private boolean isRestorableWindowState(WindowStatePersistor.State state) {
+        if (state.width() < MIN_RESTORABLE_WINDOW_DIMENSION
+                || state.height() < MIN_RESTORABLE_WINDOW_DIMENSION) {
+            return false;
+        }
+        return state.x() > MINIMIZED_WINDOW_SENTINEL_COORD
+                && state.y() > MINIMIZED_WINDOW_SENTINEL_COORD;
+    }
+
     /** Persists the window's current bounds + maximized flag, if persistence is enabled. */
     private void persistWindowState() {
         if (windowStatePersistor == null) {
@@ -624,6 +650,13 @@ public final class Window {
         }
         try {
             MemorySegment nativeWindow = nativeWindow();
+            // A minimized window's GetWindowRect is the {-32000, -32000} off-screen sentinel
+            // at a caption-sized rect - persisting it would reopen the app as an invisible
+            // sliver next launch (and re-save the same rect on every close, so it'd never
+            // recover). Keep whatever good state was saved last instead.
+            if (WindowNative.isMinimized(nativeWindow)) {
+                return;
+            }
             int[] pos = WindowNative.getPosition(nativeWindow);
             int[] size = WindowNative.getSize(nativeWindow);
             boolean maximized = WindowNative.isMaximized(nativeWindow);
