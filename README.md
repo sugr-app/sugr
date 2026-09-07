@@ -178,6 +178,10 @@ building natively cross-platform in CI, via the Gradle
 
 See [plan.md](plan.md) for the detailed, phased roadmap (foundations → PoC app → library extraction → developer experience → v0.1 launch → v1.0).
 
+## Sponsor
+
+If Sugr is useful to you or your company, please consider sponsoring the project: https://github.com/sugr-app/sugr
+
 ## License
 
 [MIT](LICENSE)
