@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AppEvents } from './generated/AppEvents.generated'
+import { WindowControls } from './generated/WindowControls.generated'
+import { TitleBar } from './components/TitleBar'
 import { ConnectionPanel } from './components/ConnectionPanel'
 import { QueryEditor } from './components/QueryEditor'
 import { TablesList } from './components/TablesList'
@@ -38,6 +40,11 @@ function App() {
 
   const [error, setError] = useState<string | null>(null)
 
+  // Off by default (Main.java doesn't call .customTitleBar() on the builder) - "Window >
+  // Toggle custom title bar" flips it native-side and, since a menu action has no direct
+  // JS-side handler to call into, tells us via customTitleBarChanged so this stays in sync.
+  const [customTitleBar, setCustomTitleBar] = useState(false)
+
   useEffect(() => {
     // The native "File > Load DB file..." menu item (see AppMenu.java) shows the
     // dialog on the Java side (menus don't have a JS-side handler to call into),
@@ -46,6 +53,11 @@ function App() {
       setDbPath(path)
       void connectTo(path)
     })
+  }, [])
+
+  useEffect(() => {
+    void WindowControls.isCustomTitleBar().then(setCustomTitleBar)
+    return AppEvents.onCustomTitleBarChanged(setCustomTitleBar)
   }, [])
 
   async function connectTo(path: string) {
@@ -123,32 +135,37 @@ function App() {
   }
 
   return (
-    <main id="sql-client">
-      <h1>{env.appTitle ?? 'sugr - SQL client'}</h1>
-      <p className="env-badge">env: {env.mode}</p>
+    <>
+      {customTitleBar && <TitleBar />}
+      {/* #sql-client's own CSS already gives it 32px of top padding by default - stack
+          the 32px title bar height on top of that (64px), instead of under it, when shown. */}
+      <main id="sql-client" style={customTitleBar ? { paddingTop: 64 } : undefined}>
+        <h1>{env.appTitle ?? 'sugr - SQL client'}</h1>
+        <p className="env-badge">env: {env.mode}</p>
 
-      <ConnectionPanel
-        dbPath={dbPath}
-        status={status}
-        connecting={connecting}
-        onDbPathChange={setDbPath}
-        onBrowse={handleBrowse}
-        onConnect={handleConnect}
-      />
+        <ConnectionPanel
+          dbPath={dbPath}
+          status={status}
+          connecting={connecting}
+          onDbPathChange={setDbPath}
+          onBrowse={handleBrowse}
+          onConnect={handleConnect}
+        />
 
-      <QueryEditor sql={sql} running={running} onSqlChange={setSql} onRun={handleRunQuery} />
+        <QueryEditor sql={sql} running={running} onSqlChange={setSql} onRun={handleRunQuery} />
 
-      {error && <p className="error-banner">{error}</p>}
+        {error && <p className="error-banner">{error}</p>}
 
-      <TablesList
-        tables={tables}
-        loading={tablesLoading}
-        onRefresh={refreshTables}
-        onSelectTable={handleSelectTable}
-      />
+        <TablesList
+          tables={tables}
+          loading={tablesLoading}
+          onRefresh={refreshTables}
+          onSelectTable={handleSelectTable}
+        />
 
-      <ResultsTable rows={rows} elapsedMs={elapsedMs} onCopy={handleCopyResults} />
-    </main>
+        <ResultsTable rows={rows} elapsedMs={elapsedMs} onCopy={handleCopyResults} />
+      </main>
+    </>
   )
 }
 

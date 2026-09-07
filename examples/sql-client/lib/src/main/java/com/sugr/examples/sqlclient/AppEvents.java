@@ -16,4 +16,8 @@ interface AppEvents {
     /** A path was picked via "File > Load DB file..." - see AppMenu#loadDbFile. */
     @Emits
     void menuLoadDb(String path);
+
+    /** The custom title bar was toggled via "Window > Toggle custom title bar" - see AppMenu. */
+    @Emits
+    void customTitleBarChanged(boolean enabled);
 }

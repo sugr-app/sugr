@@ -60,6 +60,20 @@
       ]
     },
     {
+      "type": "com.sugr.examples.sqlclient.SqlService",
+      "methods": [
+        {
+          "name": "onExecRow",
+          "parameterTypes": [
+            "java.lang.foreign.MemorySegment",
+            "int",
+            "java.lang.foreign.MemorySegment",
+            "java.lang.foreign.MemorySegment"
+          ]
+        }
+      ]
+    },
+    {
       "type": "java.lang.Boolean",
       "jniAccessible": true,
       "methods": [
@@ -292,6 +306,129 @@
         "parameterTypes": [
           "void*"
         ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jint",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jint",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jint",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "jlong",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jlong",
+          "jint",
+          "jint",
+          "jint",
+          "jint",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": []
+      },
+      {
+        "returnType": "void*",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jint",
+          "jint",
+          "jint",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "jint"
+        ]
+      },
+      {
+        "returnType": "jlong",
+        "parameterTypes": [
+          "void*",
+          "jint",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jint",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "jint",
+        "parameterTypes": [
+          "void*",
+          "void*",
+          "jint",
+          "jlong",
+          "jlong"
+        ]
+      },
+      {
+        "returnType": "void*",
+        "parameterTypes": []
       }
     ]
   }

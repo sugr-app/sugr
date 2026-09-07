@@ -28,6 +28,8 @@ public final class Main {
 
         SqlService sqlService = new SqlService();
         SqlServiceBridge generatedBridge = new SqlServiceBridge(sqlService);
+        WindowControls windowControls = new WindowControls();
+        WindowControlsBridge windowControlsBridge = new WindowControlsBridge(windowControls);
 
         String exePath = ProcessHandle.current().info().command().orElse(null);
 
@@ -50,6 +52,8 @@ public final class Main {
                 .menu(AppMenu.build(appRef, APP_ID, APP_NAME, exePath))
                 .onReady(app -> {
                     appRef.set(app);
+                    windowControls.setWindow(app.mainWindow());
+                    windowControls.setApplication(app);
                     // Same "load a DB file" action as the File menu item, but reachable even
                     // when the window isn't focused - see GlobalShortcut's javadoc. The
                     // returned handle is intentionally not closed: it should live for the
@@ -58,6 +62,7 @@ public final class Main {
                 });
 
         generatedBridge.bindTo(builder);
+        windowControlsBridge.bindTo(builder);
         builder.run();
 
         sqlService.close();

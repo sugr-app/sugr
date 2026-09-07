@@ -1,3 +1,56 @@
+.title-bar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  background: var(--code-bg);
+  border-bottom: 1px solid var(--border);
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.title-bar-text {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.title-bar-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+
+.title-bar-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(128, 128, 128, 0.15);
+  }
+}
+
+.title-bar-close:hover {
+  background: #e5484d;
+  color: #fff;
+}
+
 #sql-client {
   width: 100%;
   max-width: 900px;
