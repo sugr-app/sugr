@@ -74,7 +74,15 @@ final class WindowNative {
     private static final int SM_CYSIZEFRAME = 33;
     private static final int SM_CXPADDEDBORDER = 92;
     private static final int WS_CHILD = 0x40000000;
+    private static final int WS_OVERLAPPEDWINDOW = 0x00CF0000;
+    private static final int WS_EX_APPWINDOW = 0x00040000;
+    private static final int CW_USEDEFAULT = 0x80000000;
     private static final int WS_EX_LAYERED = 0x00080000;
+    private static final String HOST_CLASS_NAME = "SugrHostWindow";
+    /** The child window class libwebview creates inside the host to hold the WebView2 controller. */
+    private static final String WEBVIEW_WIDGET_CLASS = "webview_widget";
+    /** DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, passed to SetProcessDpiAwarenessContext as a HANDLE. */
+    private static final long DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4L;
     private static final int LWA_ALPHA = 0x2;
     private static final int SWP_HIDEWINDOW = 0x0080;
     private static final String SNAP_OVERLAY_CLASS_NAME = "SugrSnapOverlay";
@@ -116,6 +124,8 @@ final class WindowNative {
     private static final SymbolLookup USER32;
     private static final SymbolLookup DWMAPI;
     private static final SymbolLookup KERNEL32;
+    private static final SymbolLookup OLE32;
+    private static final MethodHandle CO_INITIALIZE_EX;
     private static final MethodHandle GET_WINDOW_LONG_PTR;
     private static final MethodHandle SET_WINDOW_LONG_PTR;
     private static final MethodHandle CALL_WINDOW_PROC;
@@ -125,12 +135,21 @@ final class WindowNative {
     private static final MethodHandle POST_MESSAGE;
     private static final MethodHandle SHOW_WINDOW;
     private static final MethodHandle SET_FOREGROUND_WINDOW;
+    private static final MethodHandle GET_FOREGROUND_WINDOW;
+    private static final MethodHandle GET_WINDOW_THREAD_PROCESS_ID;
+    private static final MethodHandle GET_CURRENT_THREAD_ID;
+    private static final MethodHandle ATTACH_THREAD_INPUT;
+    private static final MethodHandle BRING_WINDOW_TO_TOP;
     private static final MethodHandle CREATE_MENU;
     private static final MethodHandle CREATE_POPUP_MENU;
     private static final MethodHandle APPEND_MENU;
     private static final MethodHandle SET_MENU;
     private static final MethodHandle IS_ZOOMED;
     private static final MethodHandle IS_ICONIC;
+    private static final MethodHandle FIND_WINDOW_EX;
+    private static final MethodHandle GET_CLIENT_RECT;
+    private static final MethodHandle SET_PROCESS_DPI_AWARENESS_CONTEXT;
+    private static final MemorySegment DEF_WINDOW_PROC_ADDR;
     private static final MethodHandle GET_WINDOW_RECT;
     private static final MethodHandle DWM_SET_WINDOW_ATTRIBUTE;
     private static final MethodHandle GET_SYSTEM_METRICS;
@@ -146,6 +165,8 @@ final class WindowNative {
     private static MemorySegment overlayTrampoline;
     private static MemorySegment overlayModuleHandle;
     private static boolean overlayClassRegistered;
+    private static boolean hostClassRegistered;
+    private static boolean dpiAwarenessSet;
 
     static {
         if (Os.isWindows()) {
@@ -153,6 +174,7 @@ final class WindowNative {
             USER32 = SymbolLookup.libraryLookup("user32.dll", ARENA);
             DWMAPI = SymbolLookup.libraryLookup("dwmapi.dll", ARENA);
             KERNEL32 = SymbolLookup.libraryLookup("kernel32.dll", ARENA);
+            OLE32 = SymbolLookup.libraryLookup("ole32.dll", ARENA);
             GET_WINDOW_LONG_PTR = downcall("GetWindowLongPtrW",
                     FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
             SET_WINDOW_LONG_PTR = downcall("SetWindowLongPtrW",
@@ -176,6 +198,16 @@ final class WindowNative {
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
             SET_FOREGROUND_WINDOW = downcall("SetForegroundWindow",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+            GET_FOREGROUND_WINDOW = downcall("GetForegroundWindow",
+                    FunctionDescriptor.of(ValueLayout.ADDRESS));
+            GET_WINDOW_THREAD_PROCESS_ID = downcall("GetWindowThreadProcessId",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            GET_CURRENT_THREAD_ID = downcall(KERNEL32, "GetCurrentThreadId",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT));
+            ATTACH_THREAD_INPUT = downcall("AttachThreadInput",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+            BRING_WINDOW_TO_TOP = downcall("BringWindowToTop",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
             CREATE_MENU = downcall("CreateMenu", FunctionDescriptor.of(ValueLayout.ADDRESS));
             CREATE_POPUP_MENU = downcall("CreatePopupMenu", FunctionDescriptor.of(ValueLayout.ADDRESS));
             APPEND_MENU = downcall("AppendMenuW",
@@ -187,6 +219,18 @@ final class WindowNative {
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
             IS_ICONIC = downcall("IsIconic",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+            FIND_WINDOW_EX = downcall("FindWindowExW",
+                    FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            GET_CLIENT_RECT = downcall("GetClientRect",
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            SET_PROCESS_DPI_AWARENESS_CONTEXT = USER32.find("SetProcessDpiAwarenessContext")
+                    .map(sym -> LINKER.downcallHandle(sym,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            DEF_WINDOW_PROC_ADDR = USER32.find("DefWindowProcW").orElseThrow();
+            CO_INITIALIZE_EX = LINKER.downcallHandle(OLE32.find("CoInitializeEx").orElseThrow(),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
             GET_WINDOW_RECT = downcall("GetWindowRect",
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
             DWM_SET_WINDOW_ATTRIBUTE = downcall(DWMAPI, "DwmSetWindowAttribute",
@@ -221,6 +265,8 @@ final class WindowNative {
             USER32 = null;
             DWMAPI = null;
             KERNEL32 = null;
+            OLE32 = null;
+            CO_INITIALIZE_EX = null;
             GET_WINDOW_LONG_PTR = null;
             SET_WINDOW_LONG_PTR = null;
             CALL_WINDOW_PROC = null;
@@ -230,12 +276,21 @@ final class WindowNative {
             POST_MESSAGE = null;
             SHOW_WINDOW = null;
             SET_FOREGROUND_WINDOW = null;
+            GET_FOREGROUND_WINDOW = null;
+            GET_WINDOW_THREAD_PROCESS_ID = null;
+            GET_CURRENT_THREAD_ID = null;
+            ATTACH_THREAD_INPUT = null;
+            BRING_WINDOW_TO_TOP = null;
             CREATE_MENU = null;
             CREATE_POPUP_MENU = null;
             APPEND_MENU = null;
             SET_MENU = null;
             IS_ZOOMED = null;
             IS_ICONIC = null;
+            FIND_WINDOW_EX = null;
+            GET_CLIENT_RECT = null;
+            SET_PROCESS_DPI_AWARENESS_CONTEXT = null;
+            DEF_WINDOW_PROC_ADDR = null;
             GET_WINDOW_RECT = null;
             DWM_SET_WINDOW_ATTRIBUTE = null;
             GET_SYSTEM_METRICS = null;
@@ -259,6 +314,139 @@ final class WindowNative {
     }
 
     private WindowNative() {
+    }
+
+    /**
+     * Touching this class runs its static initializer - loading user32/dwmapi/kernel32 and
+     * linking ~40 downcall handles, a couple hundred ms on a cold JVM. {@link Window#open}
+     * calls it right before {@code webview_create} so the {@code hide()} straight after that
+     * returns runs instantly, instead of leaving libwebview's freshly-created window on
+     * screen while the bindings link.
+     */
+    static void ensureLoaded() {
+    }
+
+    /**
+     * Creates the app's top-level window ourselves - hidden, no {@code WS_VISIBLE} - and
+     * returns its {@code HWND}. libwebview is then handed this handle (webview_create's
+     * {@code window} param) so it embeds WebView2 into it as a non-owned window and never
+     * calls {@code ShowWindow} on it; {@link Window#open} shows it exactly once at the end.
+     * This mirrors how Electron/Tauri/Wails create their window and reveal it after the
+     * content is ready. Since the window is non-owned, libwebview also won't resize its
+     * WebView2 child on {@code WM_SIZE} or end the run loop on {@code WM_DESTROY} - the
+     * subclass installed by {@link #installSubclass} does both (see
+     * {@link #resizeWebviewWidget} and {@code Window}'s WM_DESTROY handling).
+     */
+    static MemorySegment createHostWindow(String title, int width, int height) throws Throwable {
+        // libwebview only CoInitializeEx()s for windows it owns. We own ours, and WebView2's
+        // environment creation needs an apartment-threaded COM apartment on this thread, so
+        // do it here. S_FALSE (already initialized STA) is fine; only a prior MTA init would
+        // fail, which the main/UI thread never does.
+        CO_INITIALIZE_EX.invoke(MemorySegment.NULL, 0x2 /* COINIT_APARTMENTTHREADED */);
+        setDpiAwareness();
+        ensureHostClass();
+        MemorySegment hwnd = (MemorySegment) CREATE_WINDOW_EX.invoke(
+                WS_EX_APPWINDOW,
+                ARENA.allocateFrom(HOST_CLASS_NAME, StandardCharsets.UTF_16LE),
+                ARENA.allocateFrom(title, StandardCharsets.UTF_16LE),
+                WS_OVERLAPPEDWINDOW,
+                CW_USEDEFAULT, CW_USEDEFAULT, width, height,
+                MemorySegment.NULL, MemorySegment.NULL, overlayModuleHandle, MemorySegment.NULL);
+        if (hwnd.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("CreateWindowExW failed for the host window");
+        }
+        return hwnd;
+    }
+
+    /** The host window's client-area size as {@code {width, height}}. */
+    static int[] clientSize(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return new int[] {0, 0};
+        }
+        MemorySegment rc = ARENA.allocate(16);
+        if ((int) GET_CLIENT_RECT.invoke(hwnd, rc) == 0) {
+            return new int[] {0, 0};
+        }
+        return new int[] {
+                rc.get(ValueLayout.JAVA_INT, 8) - rc.get(ValueLayout.JAVA_INT, 0),
+                rc.get(ValueLayout.JAVA_INT, 12) - rc.get(ValueLayout.JAVA_INT, 4)
+        };
+    }
+
+    /**
+     * Resizes every direct child of the host to fill its client area. This libwebview build
+     * embeds the WebView2 host window ({@code Chrome_WidgetWin_0}) straight as a child of the
+     * window it's given and only re-fits it from the WndProc of a window it owns - ours is
+     * non-owned, so the subclass does it here on every {@code WM_SIZE} (the WebView2
+     * controller's own bounds are driven separately in {@link Window#onNativeResize}).
+     */
+    static void resizeWebviewWidget(MemorySegment hostHwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        int[] size = clientSize(hostHwnd);
+        // Chrome_WidgetWin_1 (WebView2's actual viewport) doesn't reflow just because its
+        // parent Chrome_WidgetWin_0 was resized - Chromium sizes it from the controller's
+        // bounds, which this libwebview build gives us no C API to reach. Stretching those
+        // two is enough; the render-widget/D3D HWNDs below them follow Chromium's own layout.
+        resizeChildTree(hostHwnd, size[0], size[1], 2);
+    }
+
+    private static void resizeChildTree(MemorySegment parent, int w, int h, int depth) throws Throwable {
+        if (depth <= 0) {
+            return;
+        }
+        MemorySegment child = MemorySegment.NULL;
+        while (true) {
+            child = (MemorySegment) FIND_WINDOW_EX.invoke(parent, child, MemorySegment.NULL, MemorySegment.NULL);
+            if (child.equals(MemorySegment.NULL)) {
+                break;
+            }
+            SET_WINDOW_POS.invoke(child, 0L, 0, 0, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+            resizeChildTree(child, w, h, depth - 1);
+        }
+    }
+
+    private static synchronized void setDpiAwareness() throws Throwable {
+        if (dpiAwarenessSet || !Os.isWindows()) {
+            return;
+        }
+        dpiAwarenessSet = true;
+        // libwebview does this for windows it owns; we own ours, so match its per-monitor-v2
+        // awareness. Best-effort: absent on Windows < 1703, and a no-op if a manifest already set it.
+        if (SET_PROCESS_DPI_AWARENESS_CONTEXT != null) {
+            try {
+                SET_PROCESS_DPI_AWARENESS_CONTEXT.invoke(
+                        MemorySegment.ofAddress(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2));
+            } catch (Throwable ignored) {
+                // already set / unsupported - not fatal
+            }
+        }
+    }
+
+    private static synchronized void ensureHostClass() throws Throwable {
+        if (hostClassRegistered) {
+            return;
+        }
+        overlayModuleHandle = (MemorySegment) GET_MODULE_HANDLE.invoke(MemorySegment.NULL);
+        // WNDCLASSEXW (x64, 80 bytes) - see ensureOverlayClass for the field layout.
+        MemorySegment wc = ARENA.allocate(80);
+        wc.set(ValueLayout.JAVA_INT, 0, 80);
+        wc.set(ValueLayout.JAVA_INT, 4, 0);
+        wc.set(ValueLayout.ADDRESS, 8, DEF_WINDOW_PROC_ADDR); // libwebview + our subclass do the real work
+        wc.set(ValueLayout.JAVA_INT, 16, 0);
+        wc.set(ValueLayout.JAVA_INT, 20, 0);
+        wc.set(ValueLayout.ADDRESS, 24, overlayModuleHandle);
+        wc.set(ValueLayout.ADDRESS, 32, MemorySegment.NULL);
+        wc.set(ValueLayout.ADDRESS, 40, MemorySegment.NULL);
+        wc.set(ValueLayout.ADDRESS, 48, MemorySegment.NULL); // no background brush - WebView2 covers it, avoids a flash
+        wc.set(ValueLayout.ADDRESS, 56, MemorySegment.NULL);
+        wc.set(ValueLayout.ADDRESS, 64, ARENA.allocateFrom(HOST_CLASS_NAME, StandardCharsets.UTF_16LE));
+        wc.set(ValueLayout.ADDRESS, 72, MemorySegment.NULL);
+        if ((int) REGISTER_CLASS_EX.invoke(wc) == 0) {
+            throw new IllegalStateException("RegisterClassExW failed for the host window class");
+        }
+        hostClassRegistered = true;
     }
 
     static void setIcon(MemorySegment hwnd, String iconPath) throws Throwable {
@@ -629,19 +817,52 @@ final class WindowNative {
     }
 
     /**
-     * Shows {@code hwnd} and brings it to the foreground. The plain {@code ShowWindow(SW_SHOW)}
-     * call alone makes the window visible but doesn't reliably restore foreground/activation -
-     * that only happens implicitly for a window's very first show, done internally by
-     * {@code webview_create()} itself. Callers re-showing a window that was briefly hidden
-     * (see {@link Window#open}'s hide-until-sized dance) need this explicit nudge, or the
-     * window comes back up behind whatever else has focus instead of on top like the first time.
+     * Shows {@code hwnd} and brings it to the front, activated. {@code ShowWindow(SW_SHOW)}
+     * alone just makes it visible; {@link Window#open} keeps the window hidden through all of
+     * setup and only calls this once at the very end, so nothing else has done the "first
+     * show" activation {@code webview_create()} would otherwise do implicitly. See
+     * {@link #bringToForeground} for why plain {@code SetForegroundWindow} isn't enough when
+     * the app was launched from a terminal / forked by the Gradle daemon.
      */
     static void show(MemorySegment hwnd) throws Throwable {
         if (!Os.isWindows()) {
             return;
         }
         SHOW_WINDOW.invoke(hwnd, SW_SHOW);
-        SET_FOREGROUND_WINDOW.invoke(hwnd);
+        bringToForeground(hwnd);
+    }
+
+    /**
+     * Forces {@code hwnd} to the top of the z-order and gives it focus. A process that isn't
+     * already the foreground process (the app JVM is forked by the Gradle daemon under
+     * {@code sugr dev}, or just launched from a terminal) has its {@code SetForegroundWindow}
+     * calls silently ignored by Windows' focus-stealing guard - the taskbar button only
+     * flashes. Briefly attaching our input queue to the current foreground thread lifts that
+     * restriction for the duration of the call; the topmost/no-topmost flick then pulls the
+     * window above others without pinning it there. Safe to call for a user-driven re-show
+     * too (tray "Show", un-minimize) - there the attach is just a no-op belt-and-braces.
+     */
+    static void bringToForeground(MemorySegment hwnd) throws Throwable {
+        if (!Os.isWindows()) {
+            return;
+        }
+        MemorySegment fg = (MemorySegment) GET_FOREGROUND_WINDOW.invoke();
+        int myThread = (int) GET_CURRENT_THREAD_ID.invoke();
+        int fgThread = fg.equals(MemorySegment.NULL)
+                ? 0
+                : (int) GET_WINDOW_THREAD_PROCESS_ID.invoke(fg, MemorySegment.NULL);
+        boolean attached = fgThread != 0 && fgThread != myThread
+                && (int) ATTACH_THREAD_INPUT.invoke(myThread, fgThread, 1) != 0;
+        try {
+            SET_WINDOW_POS.invoke(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            SET_WINDOW_POS.invoke(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            BRING_WINDOW_TO_TOP.invoke(hwnd);
+            SET_FOREGROUND_WINDOW.invoke(hwnd);
+        } finally {
+            if (attached) {
+                ATTACH_THREAD_INPUT.invoke(myThread, fgThread, 0);
+            }
+        }
     }
 
     static void installSubclass(Window window, MemorySegment hwnd) throws Throwable {
@@ -791,6 +1012,9 @@ final class WindowNative {
                 case WM_SIZE -> {
                     int newWidth = (int) (lParam & 0xFFFF);
                     int newHeight = (int) ((lParam >> 16) & 0xFFFF);
+                    // The host window is non-owned, so libwebview won't do this itself - keep
+                    // the embedded WebView2 filling the client area as the window resizes.
+                    window.onNativeResize(newWidth, newHeight);
                     window.fireResized(newWidth, newHeight);
                     // wParam is SIZE_MAXIMIZED (2) / SIZE_RESTORED (0).
                     long sizeType = wParam;
