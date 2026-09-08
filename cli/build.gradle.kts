@@ -17,6 +17,14 @@ dependencies {
     implementation("info.picocli:picocli:4.7.6")
     implementation(project(":bridge"))
     annotationProcessor("info.picocli:picocli-codegen:4.7.6")
+
+    testImplementation(platform("org.junit:junit-bom:5.11.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 application {
