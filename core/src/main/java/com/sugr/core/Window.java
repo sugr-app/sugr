@@ -177,12 +177,15 @@ public final class Window {
     private MethodHandle webviewReturn;
     private MethodHandle webviewEval;
     private MethodHandle webviewGetWindow;
+    private MethodHandle webviewTerminate;
     private UiDispatcher uiDispatcher;
     private AssetServer assetServer;
     private String targetUrl;
     private long nativeWindowHandle;
+    private MemorySegment nativeWindow = MemorySegment.NULL;
     private final boolean isMain;
     private volatile boolean webviewReady = false;
+    private volatile boolean revealed = false;
 
     private Window(Builder builder, NativeLibrary webview, Arena arena, boolean isMain) {
         this.webview = webview;
@@ -693,24 +696,33 @@ public final class Window {
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         webviewGetWindow = webview.downcall("webview_get_window",
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        webviewTerminate = webview.downcall("webview_terminate",
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
 
-        handle = (MemorySegment) webviewCreate.invoke(1, MemorySegment.NULL);
+        // We create the top-level window ourselves - hidden - and hand it to libwebview, so
+        // it embeds WebView2 as a non-owned window and never shows it. Setup happens with the
+        // window invisible; scheduleReveal() shows it once, after the frontend has painted.
+        // This is the Electron/Tauri/Wails model (create hidden -> reveal on ready).
+        WindowNative.ensureLoaded();
+        MemorySegment nativeWindow = WindowNative.createHostWindow(title, width, height);
+        this.nativeWindow = nativeWindow;
+        this.nativeWindowHandle = nativeWindow.address();
+        // Subclass before anything sizes the window, so WM_SIZE already keeps the WebView2
+        // child fitted while libwebview embeds and applyChrome() runs.
+        WindowNative.installSubclass(this, nativeWindow);
+
+        // webview_create wants a POINTER to the HWND here (it does *(HWND*)window), not the
+        // HWND value itself - see webview_java, which passes a PointerByReference the same way.
+        MemorySegment hwndSlot = arena.allocate(ValueLayout.ADDRESS);
+        hwndSlot.set(ValueLayout.ADDRESS, 0, nativeWindow);
+        handle = (MemorySegment) webviewCreate.invoke(1, hwndSlot);
         if (handle.equals(MemorySegment.NULL)) {
             throw new IllegalStateException("webview_create returned NULL");
         }
         uiDispatcher = new UiDispatcher(webview, handle);
 
-        // webview_create() already shows the OS window - at whatever default size webview.dll
-        // gives it - before we get a chance to call applyChrome() below. Hiding it immediately
-        // and revealing it again only once applyChrome() has committed our actual size means
-        // the window's first-ever visible frame is already correctly sized, instead of
-        // flashing at the wrong size and then visibly snapping to the configured one.
-        MemorySegment nativeWindow = (MemorySegment) webviewGetWindow.invoke(handle);
-        WindowNative.hide(nativeWindow);
-
         webviewSetTitle.invoke(handle, arena.allocateFrom(title));
         applyChrome();
-        WindowNative.show(nativeWindow);
         webviewInit.invoke(handle, arena.allocateFrom(EVENTS_BOOTSTRAP_JS));
         if (splashScreen) {
             webviewInit.invoke(handle, arena.allocateFrom(buildSplashScript()));
@@ -726,9 +738,6 @@ public final class Window {
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         webviewBind.invoke(handle, arena.allocateFrom("emit"), emitStub, MemorySegment.NULL);
 
-        nativeWindowHandle = nativeWindow.address();
-        WindowNative.installSubclass(this, nativeWindow);
-
         targetUrl = switch (frontend) {
             case Frontend.DevServer dev -> dev.url();
             case Frontend.Embedded embedded -> {
@@ -739,6 +748,7 @@ public final class Window {
         webviewNavigate.invoke(handle, arena.allocateFrom(targetUrl));
 
         restoreSavedWindowState();
+        scheduleReveal();
 
         if (onReady != null) {
             onReady.accept(this);
@@ -746,35 +756,74 @@ public final class Window {
     }
 
     /**
+     * Shows the window once the frontend has rendered its first frame - the JS "ready ping"
+     * from {@link #EVENTS_BOOTSTRAP_JS} (see {@link #markWebviewReady}) - so there's no empty
+     * white flash. A fallback timer reveals it anyway if that ping never arrives (frontend
+     * error, dev server not up yet), so a broken page can't leave the app permanently
+     * invisible. Same idea as Electron's {@code ready-to-show} or Wails' {@code
+     * NavigationCompleted}.
+     */
+    private void scheduleReveal() {
+        Thread fallback = new Thread(() -> {
+            try {
+                Thread.sleep(4000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            reveal();
+        }, "sugr-window-reveal-fallback");
+        fallback.setDaemon(true);
+        fallback.start();
+    }
+
+    /**
+     * Keeps the embedded WebView2 filling the host's client area. libwebview only does this
+     * for windows it owns; ours is created and owned by us (see
+     * {@link WindowNative#createHostWindow}), so the subclass calls this on every
+     * {@code WM_SIZE}.
+     */
+    void onNativeResize(int clientWidth, int clientHeight) {
+        try {
+            WindowNative.resizeWebviewWidget(nativeWindow);
+        } catch (Throwable t) {
+            System.err.println("[sugr] failed to resize the embedded webview:");
+            t.printStackTrace();
+        }
+    }
+
+    /** Reveals the window (idempotent). Safe to call from any thread. */
+    private void reveal() {
+        if (revealed) {
+            return;
+        }
+        runOnUi(() -> {
+            if (revealed) {
+                return;
+            }
+            revealed = true;
+            try {
+                int[] client = WindowNative.clientSize(nativeWindow);
+                onNativeResize(client[0], client[1]);
+                WindowNative.show(nativeWindow);
+            } catch (Throwable t) {
+                throw new RuntimeException(t);
+            }
+        });
+    }
+
+    /**
      * Called from {@link #onInvoke} when the JS-side "ready ping" (see
-     * {@link #EVENTS_BOOTSTRAP_JS}) arrives, confirming {@code window.innerWidth/innerHeight}
-     * are real rather than the stale/near-zero layout a secondary window can start with.
-     *
-     * <p>Hiding the window until this point (an earlier version of this fix) turned out to
-     * make things worse, not better: WebView2 appears to defer actually committing a resize
-     * while its host window is hidden, so revealing it later caused a visible snap back to
-     * some earlier (wrong) size instead of preventing one. Keeping the window visible the
-     * whole time and nudging its size once real layout is confirmed is a smaller, one-shot
-     * correction instead of an open-ended guessing game - not perfectly invisible, but bounded
-     * and reliable, which repeated guessing at delays was neither. Only matters for windows
-     * opened via {@link Application#openWindow} - {@link #open}'s own hide-until-{@link
-     * #applyChrome}-runs dance now gets the main window's size right before it's ever shown,
-     * so this nudge would only add a redundant, visible resize blip there (confirmed: turning
-     * it on for the main window as a first attempt at that same size-flash bug reintroduced
-     * a visible resize after open, right when the ready ping's nudge fired).
+     * {@link #EVENTS_BOOTSTRAP_JS}) arrives, confirming the frontend has laid out and
+     * painted its first frame. That's the cue to {@link #reveal} the window - it was
+     * created hidden and kept that way through all of setup.
      */
     private void markWebviewReady() {
-        if (webviewReady || isMain) {
+        if (webviewReady) {
             return;
         }
         webviewReady = true;
-        try {
-            webviewSetSize.invoke(handle, width + 1, height, WV_HINT_NONE);
-            webviewSetSize.invoke(handle, width, height, WV_HINT_NONE);
-        } catch (Throwable t) {
-            System.err.println("[sugr] failed to nudge window layout after it was confirmed ready:");
-            t.printStackTrace();
-        }
+        reveal();
     }
 
     private void applyChrome() throws Throwable {
@@ -840,7 +889,17 @@ public final class Window {
             onClosed.accept(this);
         }
         persistWindowState();
-        if (!isMain) {
+        if (isMain) {
+            // The host window is ours (non-owned by libwebview), so nothing else posts
+            // WM_QUIT when it's destroyed - webview_run() in runMainLoop() would block
+            // forever. PostQuitMessage via webview_terminate is safe from inside WM_DESTROY.
+            try {
+                webviewTerminate.invoke(handle);
+            } catch (Throwable t) {
+                System.err.println("[sugr] failed to terminate the webview run loop on close:");
+                t.printStackTrace();
+            }
+        } else {
             try {
                 WindowNative.runLater(this::destroyNative);
             } catch (Throwable t) {

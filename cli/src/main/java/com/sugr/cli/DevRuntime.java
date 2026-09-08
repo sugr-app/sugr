@@ -16,9 +16,11 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Shared dev-loop engine behind both `sugr dev` and `sugr debug`: starts the
@@ -51,6 +53,17 @@ final class DevRuntime {
     private String devUrl;
     private final AtomicReference<Process> currentApp = new AtomicReference<>();
 
+    /** The thread blocked in {@link #watchAndRestartOnChange} - interrupted to end the dev loop. */
+    private volatile Thread devLoopThread;
+    /** True only while {@link #restartApp} is deliberately killing/replacing the app, so its exit isn't mistaken for the user closing the window. */
+    private volatile boolean restarting = false;
+    /** True once we're tearing down (Ctrl+C / app closed), so a late process exit doesn't re-trigger shutdown. */
+    private volatile boolean shuttingDown = false;
+    /** Vite's child processes captured at startup, before pnpm/cmd exit and orphan the node process - see {@link #stopVite}. */
+    private final java.util.List<ProcessHandle> viteTree = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /** JVMs already hosting a webview when the dev session started - left alone by {@link #ownAppWindows} so we only ever touch our own app. */
+    private volatile Set<Long> preexistingAppJvms = Set.of();
+
     DevRuntime(String frontendDir, String javaSrcDir, GradleProjectLocator.Result located,
                List<String> extraGradleArgs, Map<String, String> extraEnv, String env) {
         this.frontendDir = frontendDir;
@@ -82,26 +95,131 @@ final class DevRuntime {
         }
         log("[sugr] frontend ready at " + devUrl);
 
+        // Snapshot Vite's child tree now, while the cmd -> pnpm -> node chain is still intact.
+        // pnpm/cmd exit almost immediately, orphaning the actual `node vite.js` process, and
+        // once that happens vite.descendants() no longer lists it - so a kill at shutdown time
+        // would leave it running. These handles stay valid across the reparenting.
+        vite.descendants().forEach(viteTree::add);
+
+        // Whatever webview-hosting JVMs are already up (another sugr app the user has open)
+        // are recorded now so Ctrl+C only ever kills the app *this* dev session launched.
+        preexistingAppJvms = webviewHostingJvms().map(ProcessHandle::pid).collect(Collectors.toSet());
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            Process app = currentApp.get();
-            if (app != null) killTree(app);
-            killTree(vite);
+            shuttingDown = true;
+            closeAppWindow();
+            Process client = currentApp.get();
+            if (client != null) killTree(client);
+            stopVite(vite);
         }));
 
         restartApp();
 
         Path srcDir = Path.of(javaSrcDir).toAbsolutePath().normalize();
         if (Files.isDirectory(srcDir)) {
+            devLoopThread = Thread.currentThread();
             watchAndRestartOnChange(srcDir);
+            // Fell out of the watch loop because the app was closed (see watchForAppExit) or
+            // Ctrl+C - either way we're done; tear everything down now rather than leaving it
+            // to the shutdown hook.
+            closeAppWindow();
+            Process client = currentApp.get();
+            if (client != null) killTree(client);
+            stopVite(vite);
+            return 0;
         } else {
             log("[sugr] " + srcDir + " doesn't exist - skipping Java restart-on-change, "
                     + "just running the app once.");
             Process app = currentApp.get();
             int exit = app != null ? app.waitFor() : 1;
-            killTree(vite);
+            stopVite(vite);
             return exit;
         }
-        return 0;
+    }
+
+    /** Force-kills the Vite process plus every child captured at startup and any still-live descendant. */
+    private void stopVite(Process vite) {
+        vite.descendants().forEach(ProcessHandle::destroyForcibly);
+        viteTree.forEach(ProcessHandle::destroyForcibly);
+        vite.destroyForcibly();
+    }
+
+    /** How long {@link #closeAppWindow} waits for the app to close on its own before force-killing it. */
+    private static final long GRACEFUL_CLOSE_TIMEOUT_MILLIS = 5_000;
+
+    /**
+     * The app window(s) {@code sugr dev} launched. {@code killTree(currentApp)} can't reach
+     * them: the Gradle daemon forks the app JVM as its own child, outside the {@code gradle
+     * ... run} client tree. Scoped to JVMs that started hosting a webview *after* this dev
+     * session began ({@link #preexistingAppJvms}), so another sugr app the user has open is
+     * never touched.
+     */
+    private List<ProcessHandle> ownAppWindows() {
+        return webviewHostingJvms()
+                .filter(h -> !preexistingAppJvms.contains(h.pid()))
+                .toList();
+    }
+
+    /**
+     * Closes the app the same way its close button does: {@code taskkill} without {@code /F}
+     * posts {@code WM_CLOSE} to the process's windows, so the app's {@code onCloseRequested}/
+     * {@code onClosed} hooks and window-state persistence all run. Falls back to a forced
+     * kill only for a window that hasn't gone within {@link #GRACEFUL_CLOSE_TIMEOUT_MILLIS}
+     * (e.g. one that vetoed the close). Used for Ctrl+C and the end-of-session teardown.
+     */
+    private void closeAppWindow() {
+        List<ProcessHandle> apps = ownAppWindows();
+        if (apps.isEmpty()) {
+            return;
+        }
+        for (ProcessHandle app : apps) {
+            if (ProcessUtil.isWindows()) {
+                // taskkill without /F posts WM_CLOSE to the process's windows - the close-button path.
+                ProcessUtil.runCapture("taskkill", "/PID", Long.toString(app.pid()));
+            } else {
+                app.destroy(); // SIGTERM - the polite "please close" on macOS/Linux
+            }
+        }
+        long deadline = System.currentTimeMillis() + GRACEFUL_CLOSE_TIMEOUT_MILLIS;
+        for (ProcessHandle app : apps) {
+            while (app.isAlive() && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        forceKillAppWindow(); // anything that ignored WM_CLOSE
+    }
+
+    /** Force-kills any remaining app window + its descendants (webview, tray/shortcut helpers). */
+    private void forceKillAppWindow() {
+        ownAppWindows().forEach(h -> {
+            h.descendants().forEach(ProcessHandle::destroyForcibly);
+            h.destroyForcibly();
+        });
+    }
+
+    /** Substrings identifying an OS webview helper process spawned as a child of a sugr app JVM. */
+    private static final List<String> WEBVIEW_CHILD_MARKERS =
+            List.of("msedgewebview2", "webkitwebprocess", "webkit.webcontent");
+
+    /** Every live JVM whose direct children include an OS webview helper - i.e. a running sugr app window. */
+    private static java.util.stream.Stream<ProcessHandle> webviewHostingJvms() {
+        return ProcessHandle.allProcesses().filter(h -> {
+            String cmd = h.info().command().orElse("").toLowerCase();
+            boolean isJava = cmd.endsWith("java.exe") || cmd.endsWith("javaw.exe")
+                    || cmd.endsWith("/java") || cmd.endsWith("/javaw");
+            if (!isJava) {
+                return false;
+            }
+            return h.children().anyMatch(c -> {
+                String child = c.info().command().orElse("").toLowerCase();
+                return WEBVIEW_CHILD_MARKERS.stream().anyMatch(child::contains);
+            });
+        });
     }
 
     private static void log(String message) {
@@ -110,9 +228,11 @@ final class DevRuntime {
 
     /** Kills the currently running app and starts a fresh one, rebuilding first. */
     private void restartApp() throws IOException, InterruptedException {
+        restarting = true;
         Process old = currentApp.getAndSet(null);
         if (old != null) {
             killTree(old);
+            forceKillAppWindow(); // the daemon-forked window isn't under `old`; a rebuild kills it outright, no graceful close
             old.waitFor();
         }
 
@@ -131,10 +251,42 @@ final class DevRuntime {
         appPb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
         log("[sugr] (re)building and starting the app (gradle " + located.task()
                 + " from " + located.gradleDir() + ") ...");
-        currentApp.set(appPb.start());
+        Process app = appPb.start();
+        currentApp.set(app);
+        restarting = false;
+        watchForAppExit(app);
     }
 
-    /** Blocks, restarting the app each time a .java file under srcDir changes, until interrupted (Ctrl+C). */
+    /**
+     * Ends the dev loop when the app exits on its own - i.e. the user closed the window -
+     * so `sugr dev` returns to the shell instead of sitting in the file watcher forever.
+     * A non-zero exit (build failure, app crash) leaves the loop running so a fix + save
+     * still rebuilds; a restart we triggered ourselves is ignored via {@link #restarting}.
+     */
+    private void watchForAppExit(Process app) {
+        app.onExit().thenAccept(finished -> {
+            if (restarting || shuttingDown) {
+                return;
+            }
+            int code = finished.exitValue();
+            if (code != 0) {
+                log("[sugr] app exited (code " + code + ") - waiting for a change to rebuild ...");
+                return;
+            }
+            shuttingDown = true;
+            log("[sugr] app window closed - stopping dev server");
+            Thread loop = devLoopThread;
+            if (loop != null) {
+                loop.interrupt();
+            }
+        });
+    }
+
+    /**
+     * Blocks, restarting the app each time a .java file under srcDir changes. Returns when
+     * the thread is interrupted - by Ctrl+C, or by {@link #watchForAppExit} once the app
+     * window is closed.
+     */
     private void watchAndRestartOnChange(Path srcDir) throws IOException {
         try (WatchService watcher = FileSystems.getDefault().newWatchService()) {
             registerRecursive(srcDir, watcher);
