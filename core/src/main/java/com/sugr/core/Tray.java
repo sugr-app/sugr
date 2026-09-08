@@ -4,9 +4,12 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -23,17 +26,19 @@ import java.util.concurrent.atomic.AtomicInteger;
  * submenus (unlike {@link Menu} used for a window's menu bar) - a scoped-down
  * MVP, not a technical limit of the approach.
  *
- * <p>{@link #close} kills the hosting process outright rather than asking it
- * to dispose the icon cleanly first - Windows Explorer usually clears the
- * resulting "ghost" icon on its next redraw/hover, a minor known quirk (see
- * docs/guide/window.md).
+ * <p>{@link #close} asks the host to dispose the {@code NotifyIcon} cleanly
+ * (so the icon disappears immediately, no leftover "ghost" until Explorer
+ * repaints) and only force-kills it as a fallback. The host also disposes
+ * itself if its parent process (the app) exits without calling close.
  */
 public final class Tray implements AutoCloseable {
 
     private final Process process;
+    private final Path aliveMarker;
 
-    private Tray(Process process) {
+    private Tray(Process process, Path aliveMarker) {
         this.process = process;
+        this.aliveMarker = aliveMarker;
     }
 
     /**
@@ -74,10 +79,20 @@ public final class Tray implements AutoCloseable {
                     ? "$icon.Icon = New-Object System.Drawing.Icon(%s)".formatted(Os.psQuote(iconPath))
                     : "$icon.Icon = [System.Drawing.SystemIcons]::Application";
 
+            // The icon must be Dispose()d for it to vanish at once instead of ghosting until
+            // Explorer repaints - a force-kill never does that. So the host watches a marker
+            // file (close() deletes it) and the parent PID (gone => the app crashed or was
+            // force-killed without calling close), and on either signal disposes the icon and
+            // exits. Polled by a Timer on the UI thread - the thread the NotifyIcon lives on -
+            // so nothing blocks Application.Run()'s message loop.
+            Path marker = Files.createTempFile("sugr-tray-", ".alive");
+            marker.toFile().deleteOnExit();
             String script = """
                     Add-Type -AssemblyName System.Windows.Forms
                     Add-Type -AssemblyName System.Drawing
                     $ProgressPreference = 'SilentlyContinue'
+                    $parentPid = %d
+                    $marker = %s
                     $icon = New-Object System.Windows.Forms.NotifyIcon
                     %s
                     $icon.Text = %s
@@ -85,8 +100,25 @@ public final class Tray implements AutoCloseable {
                     %s
                     $icon.ContextMenuStrip = $menu
                     $icon.Visible = $true
+
+                    $timer = New-Object System.Windows.Forms.Timer
+                    $timer.Interval = 150
+                    $timer.Add_Tick({
+                        $done = -not (Test-Path -LiteralPath $marker)
+                        if (-not $done -and $parentPid -gt 0) {
+                            $done = -not (Get-Process -Id $parentPid -ErrorAction SilentlyContinue)
+                        }
+                        if ($done) {
+                            $timer.Stop()
+                            $icon.Visible = $false
+                            $icon.Dispose()
+                            [System.Windows.Forms.Application]::Exit()
+                        }
+                    })
+                    $timer.Start()
                     [System.Windows.Forms.Application]::Run()
-                    """.formatted(iconLine, Os.psQuote(tooltip), menuScript);
+                    """.formatted(ProcessHandle.current().pid(), Os.psQuote(marker.toString()),
+                            iconLine, Os.psQuote(tooltip), menuScript);
 
             String encoded = Base64.getEncoder().encodeToString(script.getBytes(StandardCharsets.UTF_16LE));
             // -WindowStyle Hidden suppresses powershell.exe's own console window - see
@@ -97,7 +129,7 @@ public final class Tray implements AutoCloseable {
                     .start();
 
             startClickReader(process, itemActions);
-            return new Tray(process);
+            return new Tray(process, marker);
         } catch (IOException e) {
             System.err.println("[sugr] failed to create system tray icon:");
             e.printStackTrace();
@@ -130,9 +162,25 @@ public final class Tray implements AutoCloseable {
         });
     }
 
-    /** Removes the tray icon. */
+    /**
+     * Removes the tray icon: deletes the marker file the host watches so it disposes the
+     * {@code NotifyIcon} cleanly (the icon disappears at once), waits briefly for it to
+     * exit, and force-kills it only as a fallback.
+     */
     @Override
     public void close() {
-        process.destroy();
+        try {
+            Files.deleteIfExists(aliveMarker);
+        } catch (IOException ignored) {
+            // fall through - the parent-exit check in the host still fires eventually
+        }
+        try {
+            if (!process.waitFor(3, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        }
     }
 }
