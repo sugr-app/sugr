@@ -61,7 +61,7 @@ final class DevRuntime {
     private volatile boolean shuttingDown = false;
     /** Vite's child processes captured at startup, before pnpm/cmd exit and orphan the node process - see {@link #stopVite}. */
     private final java.util.List<ProcessHandle> viteTree = new java.util.concurrent.CopyOnWriteArrayList<>();
-    /** JVMs already hosting a webview when the dev session started - left alone by {@link #killAppWindow} so it only kills our own app. */
+    /** JVMs already hosting a webview when the dev session started - left alone by {@link #ownAppWindows} so we only ever touch our own app. */
     private volatile Set<Long> preexistingAppJvms = Set.of();
 
     DevRuntime(String frontendDir, String javaSrcDir, GradleProjectLocator.Result located,
@@ -107,9 +107,9 @@ final class DevRuntime {
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             shuttingDown = true;
+            closeAppWindow();
             Process client = currentApp.get();
             if (client != null) killTree(client);
-            killAppWindow();
             stopVite(vite);
         }));
 
@@ -122,9 +122,9 @@ final class DevRuntime {
             // Fell out of the watch loop because the app was closed (see watchForAppExit) or
             // Ctrl+C - either way we're done; tear everything down now rather than leaving it
             // to the shutdown hook.
+            closeAppWindow();
             Process client = currentApp.get();
             if (client != null) killTree(client);
-            killAppWindow();
             stopVite(vite);
             return 0;
         } else {
@@ -144,22 +144,62 @@ final class DevRuntime {
         vite.destroyForcibly();
     }
 
+    /** How long {@link #closeAppWindow} waits for the app to close on its own before force-killing it. */
+    private static final long GRACEFUL_CLOSE_TIMEOUT_MILLIS = 5_000;
+
     /**
-     * Force-kills the app window {@code sugr dev} launched, plus its descendants (webview,
-     * tray/shortcut helpers). {@code killTree(currentApp)} only reaches the {@code gradle
-     * ... run} client we spawned - the Gradle daemon forks the real app JVM as its own
-     * child, outside that tree - so without this, Ctrl+C on {@code sugr dev} would leave
-     * the window open. Scoped to JVMs that started hosting a webview *after* this dev
-     * session began ({@link #preexistingAppJvms}), so another sugr app the user has open
-     * is never touched.
+     * The app window(s) {@code sugr dev} launched. {@code killTree(currentApp)} can't reach
+     * them: the Gradle daemon forks the app JVM as its own child, outside the {@code gradle
+     * ... run} client tree. Scoped to JVMs that started hosting a webview *after* this dev
+     * session began ({@link #preexistingAppJvms}), so another sugr app the user has open is
+     * never touched.
      */
-    private void killAppWindow() {
-        webviewHostingJvms()
+    private List<ProcessHandle> ownAppWindows() {
+        return webviewHostingJvms()
                 .filter(h -> !preexistingAppJvms.contains(h.pid()))
-                .forEach(h -> {
-                    h.descendants().forEach(ProcessHandle::destroyForcibly);
-                    h.destroyForcibly();
-                });
+                .toList();
+    }
+
+    /**
+     * Closes the app the same way its close button does: {@code taskkill} without {@code /F}
+     * posts {@code WM_CLOSE} to the process's windows, so the app's {@code onCloseRequested}/
+     * {@code onClosed} hooks and window-state persistence all run. Falls back to a forced
+     * kill only for a window that hasn't gone within {@link #GRACEFUL_CLOSE_TIMEOUT_MILLIS}
+     * (e.g. one that vetoed the close). Used for Ctrl+C and the end-of-session teardown.
+     */
+    private void closeAppWindow() {
+        List<ProcessHandle> apps = ownAppWindows();
+        if (apps.isEmpty()) {
+            return;
+        }
+        for (ProcessHandle app : apps) {
+            if (ProcessUtil.isWindows()) {
+                // taskkill without /F posts WM_CLOSE to the process's windows - the close-button path.
+                ProcessUtil.runCapture("taskkill", "/PID", Long.toString(app.pid()));
+            } else {
+                app.destroy(); // SIGTERM - the polite "please close" on macOS/Linux
+            }
+        }
+        long deadline = System.currentTimeMillis() + GRACEFUL_CLOSE_TIMEOUT_MILLIS;
+        for (ProcessHandle app : apps) {
+            while (app.isAlive() && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        forceKillAppWindow(); // anything that ignored WM_CLOSE
+    }
+
+    /** Force-kills any remaining app window + its descendants (webview, tray/shortcut helpers). */
+    private void forceKillAppWindow() {
+        ownAppWindows().forEach(h -> {
+            h.descendants().forEach(ProcessHandle::destroyForcibly);
+            h.destroyForcibly();
+        });
     }
 
     /** Substrings identifying an OS webview helper process spawned as a child of a sugr app JVM. */
@@ -192,7 +232,7 @@ final class DevRuntime {
         Process old = currentApp.getAndSet(null);
         if (old != null) {
             killTree(old);
-            killAppWindow(); // the daemon-forked window isn't under `old` - kill it too
+            forceKillAppWindow(); // the daemon-forked window isn't under `old`; a rebuild kills it outright, no graceful close
             old.waitFor();
         }
 
