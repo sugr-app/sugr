@@ -11,12 +11,14 @@ import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -36,7 +38,8 @@ import java.util.stream.Collectors;
 final class DevRuntime {
 
     // Stops at whitespace OR an ANSI escape char - Vite colors its output, and the
-    // escape codes land inside words (e.g. "Local" + ESC + "[22m:"), so a plain \S+ match
+    // escape codes land inside words (e.g. "Local" + ESC + "[22m:"), so a plain \S+
+    // match
     // would swallow escape sequences into the "URL" and a naive "Local:" substring
     // check would never match at all.
     private static final Pattern DEV_URL_PATTERN = Pattern.compile("(https?://[^\\s\\x1B]+)");
@@ -53,19 +56,55 @@ final class DevRuntime {
     private String devUrl;
     private final AtomicReference<Process> currentApp = new AtomicReference<>();
 
-    /** The thread blocked in {@link #watchAndRestartOnChange} - interrupted to end the dev loop. */
+    /**
+     * When the current {@link #restartApp} spawned gradle - the start of the
+     * build+launch clock.
+     */
+    private volatile long launchStartNanos;
+    /**
+     * Nanos from {@link #launchStartNanos} to Gradle reaching the {@code :run} task
+     * (build done), or 0 until then.
+     */
+    private volatile long buildDurationNanos;
+    /**
+     * Flips true once the app window for the current launch has been seen and its
+     * timing logged - so it's reported once per (re)start.
+     */
+    private final AtomicBoolean launchLogged = new AtomicBoolean();
+    /**
+     * When the app window came up, or null while nothing is running - drives the
+     * "ran for ..." line in {@link #logAppStopped}.
+     */
+    private volatile LocalDateTime runningSince;
+
+    /**
+     * The thread blocked in {@link #watchAndRestartOnChange} - interrupted to end
+     * the dev loop.
+     */
     private volatile Thread devLoopThread;
-    /** True only while {@link #restartApp} is deliberately killing/replacing the app, so its exit isn't mistaken for the user closing the window. */
+    /**
+     * True only while {@link #restartApp} is deliberately killing/replacing the
+     * app, so its exit isn't mistaken for the user closing the window.
+     */
     private volatile boolean restarting = false;
-    /** True once we're tearing down (Ctrl+C / app closed), so a late process exit doesn't re-trigger shutdown. */
+    /**
+     * True once we're tearing down (Ctrl+C / app closed), so a late process exit
+     * doesn't re-trigger shutdown.
+     */
     private volatile boolean shuttingDown = false;
-    /** Vite's child processes captured at startup, before pnpm/cmd exit and orphan the node process - see {@link #stopVite}. */
+    /**
+     * Vite's child processes captured at startup, before pnpm/cmd exit and orphan
+     * the node process - see {@link #stopVite}.
+     */
     private final java.util.List<ProcessHandle> viteTree = new java.util.concurrent.CopyOnWriteArrayList<>();
-    /** JVMs already hosting a webview when the dev session started - left alone by {@link #ownAppWindows} so we only ever touch our own app. */
+    /**
+     * JVMs already hosting a webview when the dev session started - left alone by
+     * {@link #ownAppWindows} so we only ever touch our own app.
+     */
     private volatile Set<Long> preexistingAppJvms = Set.of();
 
     DevRuntime(String frontendDir, String javaSrcDir, GradleProjectLocator.Result located,
-               List<String> extraGradleArgs, Map<String, String> extraEnv, String env) {
+            List<String> extraGradleArgs, Map<String, String> extraEnv, String env) {
         this.frontendDir = frontendDir;
         this.javaSrcDir = javaSrcDir;
         this.located = located;
@@ -89,27 +128,34 @@ final class DevRuntime {
 
         devUrl = waitForDevServerUrl(vite);
         if (devUrl == null) {
-            System.err.println("[sugr] could not detect the Vite dev server URL - is `pnpm dev` printing a Local: line?");
+            System.err
+                    .println("[sugr] could not detect the Vite dev server URL - is `pnpm dev` printing a Local: line?");
             vite.destroy();
             return 1;
         }
         log("[sugr] frontend ready at " + devUrl);
 
-        // Snapshot Vite's child tree now, while the cmd -> pnpm -> node chain is still intact.
-        // pnpm/cmd exit almost immediately, orphaning the actual `node vite.js` process, and
-        // once that happens vite.descendants() no longer lists it - so a kill at shutdown time
+        // Snapshot Vite's child tree now, while the cmd -> pnpm -> node chain is still
+        // intact.
+        // pnpm/cmd exit almost immediately, orphaning the actual `node vite.js`
+        // process, and
+        // once that happens vite.descendants() no longer lists it - so a kill at
+        // shutdown time
         // would leave it running. These handles stay valid across the reparenting.
         vite.descendants().forEach(viteTree::add);
 
-        // Whatever webview-hosting JVMs are already up (another sugr app the user has open)
-        // are recorded now so Ctrl+C only ever kills the app *this* dev session launched.
+        // Whatever webview-hosting JVMs are already up (another sugr app the user has
+        // open)
+        // are recorded now so Ctrl+C only ever kills the app *this* dev session
+        // launched.
         preexistingAppJvms = webviewHostingJvms().map(ProcessHandle::pid).collect(Collectors.toSet());
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             shuttingDown = true;
             closeAppWindow();
             Process client = currentApp.get();
-            if (client != null) killTree(client);
+            if (client != null)
+                killTree(client);
             stopVite(vite);
         }));
 
@@ -119,12 +165,15 @@ final class DevRuntime {
         if (Files.isDirectory(srcDir)) {
             devLoopThread = Thread.currentThread();
             watchAndRestartOnChange(srcDir);
-            // Fell out of the watch loop because the app was closed (see watchForAppExit) or
-            // Ctrl+C - either way we're done; tear everything down now rather than leaving it
+            // Fell out of the watch loop because the app was closed (see watchForAppExit)
+            // or
+            // Ctrl+C - either way we're done; tear everything down now rather than leaving
+            // it
             // to the shutdown hook.
             closeAppWindow();
             Process client = currentApp.get();
-            if (client != null) killTree(client);
+            if (client != null)
+                killTree(client);
             stopVite(vite);
             return 0;
         } else {
@@ -132,26 +181,37 @@ final class DevRuntime {
                     + "just running the app once.");
             Process app = currentApp.get();
             int exit = app != null ? app.waitFor() : 1;
+            logAppStopped("stopped");
             stopVite(vite);
             return exit;
         }
     }
 
-    /** Force-kills the Vite process plus every child captured at startup and any still-live descendant. */
+    /**
+     * Force-kills the Vite process plus every child captured at startup and any
+     * still-live descendant.
+     */
     private void stopVite(Process vite) {
         vite.descendants().forEach(ProcessHandle::destroyForcibly);
         viteTree.forEach(ProcessHandle::destroyForcibly);
         vite.destroyForcibly();
     }
 
-    /** How long {@link #closeAppWindow} waits for the app to close on its own before force-killing it. */
+    /**
+     * How long {@link #closeAppWindow} waits for the app to close on its own before
+     * force-killing it.
+     */
     private static final long GRACEFUL_CLOSE_TIMEOUT_MILLIS = 5_000;
 
     /**
-     * The app window(s) {@code sugr dev} launched. {@code killTree(currentApp)} can't reach
-     * them: the Gradle daemon forks the app JVM as its own child, outside the {@code gradle
-     * ... run} client tree. Scoped to JVMs that started hosting a webview *after* this dev
-     * session began ({@link #preexistingAppJvms}), so another sugr app the user has open is
+     * The app window(s) {@code sugr dev} launched. {@code killTree(currentApp)}
+     * can't reach
+     * them: the Gradle daemon forks the app JVM as its own child, outside the
+     * {@code gradle
+     * ... run} client tree. Scoped to JVMs that started hosting a webview *after*
+     * this dev
+     * session began ({@link #preexistingAppJvms}), so another sugr app the user has
+     * open is
      * never touched.
      */
     private List<ProcessHandle> ownAppWindows() {
@@ -161,20 +221,27 @@ final class DevRuntime {
     }
 
     /**
-     * Closes the app the same way its close button does: {@code taskkill} without {@code /F}
-     * posts {@code WM_CLOSE} to the process's windows, so the app's {@code onCloseRequested}/
-     * {@code onClosed} hooks and window-state persistence all run. Falls back to a forced
-     * kill only for a window that hasn't gone within {@link #GRACEFUL_CLOSE_TIMEOUT_MILLIS}
-     * (e.g. one that vetoed the close). Used for Ctrl+C and the end-of-session teardown.
+     * Closes the app the same way its close button does: {@code taskkill} without
+     * {@code /F}
+     * posts {@code WM_CLOSE} to the process's windows, so the app's
+     * {@code onCloseRequested}/
+     * {@code onClosed} hooks and window-state persistence all run. Falls back to a
+     * forced
+     * kill only for a window that hasn't gone within
+     * {@link #GRACEFUL_CLOSE_TIMEOUT_MILLIS}
+     * (e.g. one that vetoed the close). Used for Ctrl+C and the end-of-session
+     * teardown.
      */
     private void closeAppWindow() {
         List<ProcessHandle> apps = ownAppWindows();
         if (apps.isEmpty()) {
             return;
         }
+        logAppStopped("session ended");
         for (ProcessHandle app : apps) {
             if (ProcessUtil.isWindows()) {
-                // taskkill without /F posts WM_CLOSE to the process's windows - the close-button path.
+                // taskkill without /F posts WM_CLOSE to the process's windows - the
+                // close-button path.
                 ProcessUtil.runCapture("taskkill", "/PID", Long.toString(app.pid()));
             } else {
                 app.destroy(); // SIGTERM - the polite "please close" on macOS/Linux
@@ -194,7 +261,10 @@ final class DevRuntime {
         forceKillAppWindow(); // anything that ignored WM_CLOSE
     }
 
-    /** Force-kills any remaining app window + its descendants (webview, tray/shortcut helpers). */
+    /**
+     * Force-kills any remaining app window + its descendants (webview,
+     * tray/shortcut helpers).
+     */
     private void forceKillAppWindow() {
         ownAppWindows().forEach(h -> {
             h.descendants().forEach(ProcessHandle::destroyForcibly);
@@ -202,11 +272,17 @@ final class DevRuntime {
         });
     }
 
-    /** Substrings identifying an OS webview helper process spawned as a child of a sugr app JVM. */
-    private static final List<String> WEBVIEW_CHILD_MARKERS =
-            List.of("msedgewebview2", "webkitwebprocess", "webkit.webcontent");
+    /**
+     * Substrings identifying an OS webview helper process spawned as a child of a
+     * sugr app JVM.
+     */
+    private static final List<String> WEBVIEW_CHILD_MARKERS = List.of("msedgewebview2", "webkitwebprocess",
+            "webkit.webcontent");
 
-    /** Every live JVM whose direct children include an OS webview helper - i.e. a running sugr app window. */
+    /**
+     * Every live JVM whose direct children include an OS webview helper - i.e. a
+     * running sugr app window.
+     */
     private static java.util.stream.Stream<ProcessHandle> webviewHostingJvms() {
         return ProcessHandle.allProcesses().filter(h -> {
             String cmd = h.info().command().orElse("").toLowerCase();
@@ -231,8 +307,10 @@ final class DevRuntime {
         restarting = true;
         Process old = currentApp.getAndSet(null);
         if (old != null) {
+            logAppStopped("stopping for rebuild");
             killTree(old);
-            forceKillAppWindow(); // the daemon-forked window isn't under `old`; a rebuild kills it outright, no graceful close
+            forceKillAppWindow(); // the daemon-forked window isn't under `old`; a rebuild kills it outright, no
+                                  // graceful close
             old.waitFor();
         }
 
@@ -248,20 +326,145 @@ final class DevRuntime {
         appPb.environment().put("SUGR_ENV", env);
         appPb.environment().putAll(extraEnv);
         appPb.redirectErrorStream(true);
-        appPb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
         log("[sugr] (re)building and starting the app (gradle " + located.task()
                 + " from " + located.gradleDir() + ") ...");
+        // Windows already up (a previous launch being torn down) - wait for a *new*
+        // one, not these.
+        Set<Long> windowsBefore = ownAppWindows().stream().map(ProcessHandle::pid).collect(Collectors.toSet());
+        launchStartNanos = System.nanoTime();
+        buildDurationNanos = 0;
+        launchLogged.set(false);
         Process app = appPb.start();
         currentApp.set(app);
         restarting = false;
+        forwardAppOutput(app);
         watchForAppExit(app);
+        awaitAppWindow(app, windowsBefore);
     }
 
     /**
-     * Ends the dev loop when the app exits on its own - i.e. the user closed the window -
-     * so `sugr dev` returns to the shell instead of sitting in the file watcher forever.
-     * A non-zero exit (build failure, app crash) leaves the loop running so a fix + save
-     * still rebuilds; a restart we triggered ourselves is ignored via {@link #restarting}.
+     * The exact line Gradle prints when it starts the app's {@code run} task - i.e.
+     * compilation is done.
+     */
+    private String runTaskLine() {
+        String task = located.task();
+        return "> Task " + (task.startsWith(":") ? task : ":" + task);
+    }
+
+    /**
+     * Reads the gradle/app process output line by line (previously piped straight
+     * to the
+     * console via {@code Redirect.INHERIT}). Every line is still echoed - just
+     * timestamped
+     * like the vite lines - and the {@code > Task ...:run} line is used to
+     * timestamp the
+     * end of the build, so {@link #awaitAppWindow} can report build vs. startup
+     * time
+     * separately.
+     */
+    private void forwardAppOutput(Process app) {
+        Thread.ofVirtual().start(() -> {
+            String marker = runTaskLine();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(app.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String stripped = line.strip();
+                    // ">Task :app:run" exactly, or "> Task :app:run SKIPPED"/"... FROM-CACHE" etc.
+                    boolean atRunTask = stripped.equals(marker) || stripped.startsWith(marker + " ");
+                    if (buildDurationNanos == 0 && atRunTask) {
+                        buildDurationNanos = System.nanoTime() - launchStartNanos;
+                        log(String.format("[sugr] build finished in %s - starting app ...",
+                                seconds(buildDurationNanos)));
+                    }
+                    log("[app] " + line);
+                }
+            } catch (IOException ignored) {
+                // process ended
+            }
+        });
+    }
+
+    private static String seconds(long nanos) {
+        return String.format("%.1fs", nanos / 1_000_000_000.0);
+    }
+
+    /**
+     * Polls in the background until the app window this launch opened shows up (a
+     * webview-hosting
+     * JVM that wasn't already running), then logs the build+launch time and the
+     * wall-clock start.
+     * Gives up quietly if the app dies first or the dev session is shutting down.
+     */
+    private void awaitAppWindow(Process app, Set<Long> windowsBefore) {
+        Thread.ofVirtual().start(() -> {
+            while (app.isAlive() && !shuttingDown) {
+                boolean up = ownAppWindows().stream()
+                        .anyMatch(h -> !windowsBefore.contains(h.pid()));
+                if (up && launchLogged.compareAndSet(false, true)) {
+                    long totalNanos = System.nanoTime() - launchStartNanos;
+                    long build = buildDurationNanos;
+                    runningSince = LocalDateTime.now();
+                    String breakdown = build > 0
+                            ? seconds(build) + " build + " + seconds(totalNanos - build) + " startup"
+                            : seconds(totalNanos) + " build+startup";
+                    log(String.format("[sugr] app launched - total %s (%s)",
+                            seconds(totalNanos), breakdown));
+                    return;
+                }
+                try {
+                    Thread.sleep(250);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        });
+    }
+
+    /**
+     * Logs when a running app stops - {@code reason} says why (rebuild, window
+     * closed, session
+     * ended) - together with the wall-clock time and how long it had been up. A
+     * no-op if the
+     * app never finished launching, and it clears {@link #runningSince} so it fires
+     * only once
+     * per launch even though several teardown paths call it.
+     */
+    private void logAppStopped(String reason) {
+        LocalDateTime since = runningSince;
+        if (since == null) {
+            return;
+        }
+        runningSince = null;
+        LocalDateTime now = LocalDateTime.now();
+        log(String.format("[sugr] app %s at %s - ran for %s",
+                reason, now.format(TIME_FORMAT), humanDuration(Duration.between(since, now))));
+    }
+
+    private static String humanDuration(Duration d) {
+        long total = Math.max(0, d.toSeconds());
+        long hours = total / 3600;
+        long minutes = (total % 3600) / 60;
+        long seconds = total % 60;
+        if (hours > 0) {
+            return hours + "h " + minutes + "m " + seconds + "s";
+        }
+        if (minutes > 0) {
+            return minutes + "m " + seconds + "s";
+        }
+        return seconds + "s";
+    }
+
+    /**
+     * Ends the dev loop when the app exits on its own - i.e. the user closed the
+     * window -
+     * so `sugr dev` returns to the shell instead of sitting in the file watcher
+     * forever.
+     * A non-zero exit (build failure, app crash) leaves the loop running so a fix +
+     * save
+     * still rebuilds; a restart we triggered ourselves is ignored via
+     * {@link #restarting}.
      */
     private void watchForAppExit(Process app) {
         app.onExit().thenAccept(finished -> {
@@ -270,10 +473,12 @@ final class DevRuntime {
             }
             int code = finished.exitValue();
             if (code != 0) {
+                logAppStopped("exited (code " + code + ")");
                 log("[sugr] app exited (code " + code + ") - waiting for a change to rebuild ...");
                 return;
             }
             shuttingDown = true;
+            logAppStopped("window closed");
             log("[sugr] app window closed - stopping dev server");
             Thread loop = devLoopThread;
             if (loop != null) {
@@ -283,8 +488,10 @@ final class DevRuntime {
     }
 
     /**
-     * Blocks, restarting the app each time a .java file under srcDir changes. Returns when
-     * the thread is interrupted - by Ctrl+C, or by {@link #watchForAppExit} once the app
+     * Blocks, restarting the app each time a .java file under srcDir changes.
+     * Returns when
+     * the thread is interrupted - by Ctrl+C, or by {@link #watchForAppExit} once
+     * the app
      * window is closed.
      */
     private void watchAndRestartOnChange(Path srcDir) throws IOException {
@@ -344,10 +551,13 @@ final class DevRuntime {
     }
 
     /**
-     * Kills a process AND its descendants. A plain Process.destroyForcibly() only kills
-     * the process we directly spawned (e.g. the "gradle"/"cmd" launcher) - any children
+     * Kills a process AND its descendants. A plain Process.destroyForcibly() only
+     * kills
+     * the process we directly spawned (e.g. the "gradle"/"cmd" launcher) - any
+     * children
      * it forked (a JavaExec'd app JVM, a Gradle Daemon's worker) survive and become
-     * orphaned windows/processes. See the --no-daemon comment in restartApp() for why
+     * orphaned windows/processes. See the --no-daemon comment in restartApp() for
+     * why
      * this matters more than usual here.
      */
     private static void killTree(Process process) {
@@ -355,9 +565,13 @@ final class DevRuntime {
         process.destroyForcibly();
     }
 
-    /** Reads vite's output, echoing every line, until a line contains an http(s) URL. */
+    /**
+     * Reads vite's output, echoing every line, until a line contains an http(s)
+     * URL.
+     */
     private String waitForDevServerUrl(Process vite) throws IOException {
-        BufferedReader reader = new BufferedReader(new InputStreamReader(vite.getInputStream(), StandardCharsets.UTF_8));
+        BufferedReader reader = new BufferedReader(
+                new InputStreamReader(vite.getInputStream(), StandardCharsets.UTF_8));
         String foundUrl = null;
         String line;
         while ((line = reader.readLine()) != null) {
