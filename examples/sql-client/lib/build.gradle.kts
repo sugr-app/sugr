@@ -34,7 +34,7 @@ graalvmNative {
                 buildArgs.add("-H:NativeLinkerOption=/SUBSYSTEM:WINDOWS")
                 buildArgs.add("-H:NativeLinkerOption=/ENTRY:mainCRTStartup")
             }
-            buildArgs.add("-H:IncludeResources=(native|frontend)/.*")
+            buildArgs.add("-H:IncludeResources=(native|frontend|sugr)/.*")
             buildArgs.add("-H:+UnlockExperimentalVMOptions")
         }
     }

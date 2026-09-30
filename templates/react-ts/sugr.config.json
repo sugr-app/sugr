@@ -1,4 +1,5 @@
 {
   "name": "__APP_NAME__",
-  "appVersion": "0.1.0"
+  "appVersion": "0.1.0",
+  "identifier": "app.__pkg__"
 }
