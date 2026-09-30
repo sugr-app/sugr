@@ -29,6 +29,7 @@ export default withMermaid(defineConfig({
           { text: 'Native dialogs, clipboard & autostart', link: '/guide/native' },
           { text: 'Global shortcuts', link: '/guide/shortcuts' },
           { text: 'Building & packaging', link: '/guide/build' },
+          { text: 'Auto-updates', link: '/guide/updates' },
           { text: 'Environments', link: '/guide/environments' },
           { text: 'Debugging', link: '/guide/debug' },
         ],

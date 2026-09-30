@@ -47,6 +47,48 @@ public final class Application {
     }
 
     /**
+     * This app's version, as written in {@code sugr.config.json}'s
+     * {@code appVersion} and embedded into the binary by the CLI. Returns
+     * {@code "0.0.0-dev"} for a build that skipped the CLI (e.g. a plain
+     * {@code gradle run}), so it's always safe to display.
+     */
+    public String version() {
+        return AppMetadata.get().version().toString();
+    }
+
+    /** This app's name from {@code sugr.config.json}. */
+    public String name() {
+        return AppMetadata.get().name();
+    }
+
+    /** This app's bundle identifier (e.g. {@code "com.sugr.sql-client"}) - the key its data directory is scoped by. */
+    public String identifier() {
+        return AppMetadata.get().identifier();
+    }
+
+    /**
+     * The updater for this app, or {@code null} when updates are unavailable -
+     * not configured in {@code sugr.config.json}, running under {@code sugr dev},
+     * not a packaged binary, or switched off via {@code SUGR_DISABLE_UPDATER}.
+     */
+    public Updater updater() {
+        return Updater.shared();
+    }
+
+    /**
+     * Starts a fresh copy of this app and exits the current process. Used by
+     * the updater after swapping the binary, and available on its own for apps
+     * that need a restart (a settings change that only applies at startup, say).
+     *
+     * <p>The new process is spawned <em>before</em> this one exits and is not a
+     * child in any meaningful sense - it inherits no handles and outlives us -
+     * so the two never contend for the window or the webview runtime.
+     */
+    public void relaunch() {
+        Relauncher.relaunch();
+    }
+
+    /**
      * Opens an additional window sharing this app's native library/arena/UI
      * thread. Closing it doesn't close the app - only closing the main window
      * does (same as the underlying event loop, which only runs for the main
@@ -83,6 +125,10 @@ public final class Application {
     }
 
     private void run(Window.Builder mainWindowBuilder, Consumer<Application> onReady) throws Throwable {
+        // Before anything else touches the install directory: finish or tidy up
+        // after an update that was applied by the previous run of this app.
+        UpdateInstaller.cleanupAfterUpdate();
+
         Path dllPath = NativeLibrary.extractToTempFile(Application.class, "/native/webview.dll", "webview", ".dll");
         nativeLib = new NativeLibrary(dllPath, arena);
         mainWindowBuilder.onReady(window -> {

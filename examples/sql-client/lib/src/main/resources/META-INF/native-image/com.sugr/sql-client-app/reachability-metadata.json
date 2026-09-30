@@ -193,6 +193,9 @@
     },
     {
       "glob": "native/webview.dll"
+    },
+    {
+      "glob": "sugr/app.json"
     }
   ],
   "foreign": {

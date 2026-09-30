@@ -215,8 +215,8 @@ public final class Window {
         this.onFocus = builder.onFocus;
         this.onBlur = builder.onBlur;
         this.onResize = builder.onResize;
-        if (builder.restoreWindowState && builder.appName != null && !builder.appName.isBlank()) {
-            this.windowStatePersistor = new WindowStatePersistor(builder.appName);
+        if (builder.restoreWindowState) {
+            this.windowStatePersistor = new WindowStatePersistor(builder.appNameOrDefault());
         }
     }
 
@@ -738,6 +738,11 @@ public final class Window {
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         webviewBind.invoke(handle, arena.allocateFrom("emit"), emitStub, MemorySegment.NULL);
 
+        // Framework-owned bridge methods (sugr.app.*, sugr.updater.*). Registered
+        // after the app's own bindings so the dotted names sit alongside them in
+        // the same dispatcher - they can't collide, see SugrBridge.
+        SugrBridge.register(bridge);
+
         targetUrl = switch (frontend) {
             case Frontend.DevServer dev -> dev.url();
             case Frontend.Embedded embedded -> {
@@ -753,6 +758,10 @@ public final class Window {
         if (onReady != null) {
             onReady.accept(this);
         }
+
+        // Only now can this window evaluate JS, so this is the earliest point an
+        // updater event could actually reach a listener.
+        SugrBridge.attach(this, isMain);
     }
 
     /**
@@ -1220,12 +1229,20 @@ public final class Window {
 
         /**
          * Sets the stable app identifier used to scope persisted state (e.g.
-         * {@code "sugr.examples.sqlclient"}). Only needed when
-         * {@link #restoreWindowState} is enabled - see {@link AppPaths#dataDir}.
+         * {@code "sugr.examples.sqlclient"}). Defaults to the {@code identifier}
+         * from {@code sugr.config.json} (see {@link AppMetadata}), so apps built
+         * by the CLI don't need to repeat it here; set it explicitly to override.
+         * Only consulted when {@link #restoreWindowState} is enabled - see
+         * {@link AppPaths#dataDir}.
          */
         public Builder appName(String appName) {
             this.appName = appName;
             return this;
+        }
+
+        /** The configured app name, falling back to the embedded {@code identifier}. */
+        String appNameOrDefault() {
+            return appName != null && !appName.isBlank() ? appName : AppMetadata.get().identifier();
         }
 
         /**

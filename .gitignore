@@ -17,6 +17,12 @@ dist/
 **/.vite/
 *.log
 
+# Generated app metadata (sugr build/dev/package writes this from sugr.config.json)
+**/lib/src/main/resources/sugr/app.json
+
+# Release signing keys (`sugr keygen`'s default output dir)
+.sugr/
+
 # IDE
 .idea/
 *.iml

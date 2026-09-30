@@ -27,6 +27,30 @@ static Application.Builder builder()
 | Method | |
 |---|---|
 | `emit(String event, String payloadJson)` | Sends an event to JS. Safe from any thread. |
+| `version()` | This app's version, embedded at package time (`"0.0.0-dev"` for a build that skipped the CLI). |
+| `name()` | This app's name from `sugr.config.json`. |
+| `identifier()` | This app's bundle identifier, e.g. `"com.sugr.sql-client"`. |
+| `updater()` | The `Updater` for this app, or `null` when updates aren't configured/available - see [Auto-updates](/guide/updates). |
+| `relaunch()` | Spawns a fresh copy of the app and exits this process. |
+
+### `com.sugr.core.Updater`
+
+Returned by `Application.updater()`; also driven automatically by the
+framework when `sugr.config.json`'s `updater.prompt` is `true` (the default).
+See [Auto-updates](/guide/updates) for the full guide.
+
+```java
+CompletableFuture<UpdateInfo> check()       // null when already current
+CompletableFuture<Void> download()          // downloads + verifies what check() found
+void install()                              // applies the update and restarts - does not return
+CompletableFuture<Void> downloadAndInstall()
+boolean isReadyToInstall()
+String currentVersion()
+String channel()
+```
+
+`UpdateInfo` and `Progress` are records: `UpdateInfo(version, currentVersion,
+notes, pubDate, size)`, `Progress(downloaded, total, percent)`.
 
 ## Java: `com.sugr.core.Frontend`
 
@@ -98,3 +122,34 @@ const events: {
 
 Prefer the typed stub generated per class (e.g. `Backend.hello(...)`) over
 calling `invoke()` directly - see [Binding Java to JS](/guide/bind).
+
+### `app`
+
+```ts
+app.info(): Promise<{ name: string; version: string; identifier: string }>
+```
+
+### `updater`
+
+Full guide: [Auto-updates](/guide/updates).
+
+```ts
+updater.isSupported(): Promise<boolean>
+updater.currentVersion(): Promise<string>
+updater.check(): Promise<UpdateInfo | null>
+updater.download(onProgress?: (p: UpdateProgress) => void): Promise<void>
+updater.install(): Promise<void>                 // does not resolve - restarts the app
+updater.downloadAndInstall(onProgress?: (p: UpdateProgress) => void): Promise<void>
+updater.isReadyToInstall(): Promise<boolean>
+updater.relaunch(): Promise<void>
+
+updater.onUpdateAvailable(listener: (info: UpdateInfo) => void): () => void
+updater.onProgress(listener: (p: UpdateProgress) => void): () => void
+updater.onDownloaded(listener: (info: UpdateInfo) => void): () => void
+updater.onError(listener: (e: { code: string; message: string }) => void): () => void
+updater.onManualRequired(listener: (i: { version: string; reason: string; url: string }) => void): () => void
+```
+
+Every `on*` method returns an unsubscribe function. Rejects with `code:
+"UPDATER_DISABLED"` when no `updater` block is configured, under `sugr dev`,
+or in an unpackaged build.
