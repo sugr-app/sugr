@@ -187,6 +187,12 @@ public final class Application {
             return this;
         }
 
+        /** See {@link Window.Builder#allowOrigin}. */
+        public Builder allowOrigin(String... origins) {
+            windowBuilder.allowOrigin(origins);
+            return this;
+        }
+
         /**
          * Registers a raw JSON handler for {@code method} directly, bypassing the
          * {@code @Bind}/processor codegen path entirely. Prefer {@code @Bind} - it
