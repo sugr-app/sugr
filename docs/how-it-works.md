@@ -30,12 +30,14 @@ using the [Foreign Function & Memory API](https://openjdk.org/jeps/454)
    thread" for the rest of the run).
 3. **Configure it.** `webview_set_title`, `webview_set_size`.
 4. **Inject the events bootstrap.** `webview_init` runs a small script
-   (`window.__sugrEvents__`, an event emitter) before *any* page loads,
+   (`window.__sugrEvents__`, an event emitter, plus the `window.invoke`/
+   `window.emit` wrappers described below) before *any* page loads,
    including the very first navigation.
-5. **Bind the two fixed upcalls.** `"invoke"` (JS calls into Java - see
-   [The bridge protocol](#the-bridge-protocol) below) and `"emit"` (JS→Java
-   events). This is the *entire* JS↔Java surface - every `@Bind` method and
-   every hand-written `bind()` call goes through the same `"invoke"` binding.
+5. **Bind the two fixed upcalls.** `"__sugrInvoke"` (JS calls into Java - see
+   [The bridge protocol](#the-bridge-protocol) below) and `"__sugrEmit"`
+   (JS→Java events), wrapped by `window.invoke`/`window.emit`. This is the
+   *entire* JS↔Java surface - every `@Bind` method and every hand-written
+   `bind()` call goes through the same invoke binding.
 6. **Navigate.** To the dev server URL (`sugr dev`, real HMR) or to the
    embedded `AssetServer`'s local base URL (`sugr build`'s production path) -
    see [Window & frontend](/guide/window).
@@ -74,9 +76,9 @@ currently no app-level "before close" hook - closing the window ends
 ## The bridge protocol
 
 JS never calls arbitrary native functions - there's exactly one entry point,
-`window.invoke(method, paramsJson)`, injected by a single `webview_bind` call
-in `Application.run()`. Every `@Bind`-generated or hand-written binding goes
-through it:
+`window.invoke(method, paramsJson)`, a thin wrapper (from the bootstrap
+script) over a single raw `webview_bind` binding. Every `@Bind`-generated or
+hand-written binding goes through it:
 
 ```mermaid
 sequenceDiagram
@@ -86,13 +88,24 @@ sequenceDiagram
     participant Bridge as Bridge (bridge module)
 
     JS->>Raw: invoke("hello", ["world"])
-    Raw->>App: native req: ["hello", "[\"world\"]"]
+    Raw->>App: native req: ["hello", "[\"world\"]", "http://127.0.0.1:54321"]
     App->>Bridge: Bridge.dispatch(reqJson)
     Bridge->>Bridge: look up "hello" handler, call it
     Bridge-->>App: JSON result string
     App->>Raw: webview_return(handle, seq, isError, resultJson)
     Raw-->>JS: Promise resolves/rejects
 ```
+
+The wrapper appends the page's `location.origin` as a third element. `Window`
+rejects a request that isn't a well-formed `[method, paramsJson]` array with
+a `BAD_REQUEST` error, and one whose origin isn't the window's own frontend
+origin (the embedded `AssetServer`'s `http://127.0.0.1:<port>`, or the dev
+server's origin) or one added via `allowOrigin(...)` with `FORBIDDEN`. The
+origin check is defense-in-depth only - the page reports its own origin, so
+script running in the page could spoof it; blocking navigation away from the
+app and a Content-Security-Policy are planned as the real boundary. Nothing
+thrown while handling a call (bad JSON, a failing handler or event listener)
+is allowed to escape the native upcall, since that would terminate the JVM.
 
 `Bridge` doesn't know about webview at all - `Application` (in `core`) owns
 the FFM calls and the JSON-RPC-shaped envelope; `Bridge` just routes a method
@@ -101,7 +114,7 @@ calls and `@Bind`-generated ones can freely mix: they're both just entries in
 the same `Bridge` handler map.
 
 Events (`events.emit()`/`events.on()`) are a second, parallel channel -
-`webview_bind("emit", ...)` for JS→Java, and a JS-side `__sugrEvents__`
+the raw emit binding (wrapped by `window.emit`, origin-checked the same way) for JS→Java, and a JS-side `__sugrEvents__`
 dispatcher (injected once via `webview_init`, before any page loads) for
 Java→JS, driven by `Application.emit()` calling `webview_eval`.
 

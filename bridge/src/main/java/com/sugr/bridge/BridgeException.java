@@ -20,6 +20,9 @@ public final class BridgeException extends RuntimeException {
     /** The {@code invoke()} request itself was malformed (not a {@code [method, paramsJson]} array) - see {@link Bridge#parseRequest}. */
     public static final String BAD_REQUEST = "BAD_REQUEST";
 
+    /** The call came from a page origin the window doesn't allow - see {@code core}'s {@code Window.Builder.allowOrigin}. */
+    public static final String FORBIDDEN = "FORBIDDEN";
+
     private final String code;
     private final Json data;
 

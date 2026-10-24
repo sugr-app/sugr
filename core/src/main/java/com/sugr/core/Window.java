@@ -45,8 +45,29 @@ public final class Window {
      * still visibly jittered into place after being revealed. Polling the real layout
      * size directly ties "ready" to the exact condition the user can actually see, so
      * there's nothing left to guess about.
+     *
+     * <p>It also defines {@code window.invoke}/{@code window.emit} itself, as thin wrappers
+     * over the raw webview bindings ({@link #RAW_INVOKE_BINDING}/{@link #RAW_EMIT_BINDING})
+     * that append the page's {@code location.origin} as a third argument, so Java can check
+     * it against {@link OriginPolicy}. The JS-facing signature is unchanged -
+     * {@code invoke(method, paramsJson)} / {@code emit(event, payloadJson)}, which is all
+     * {@code @sugr/runtime} uses. The raw binding is looked up on every call rather than
+     * captured, because libwebview's own binding script is injected after this one.
      */
     private static final String EVENTS_BOOTSTRAP_JS = """
+            (function () {
+                function forward(rawName) {
+                    return function (name, json) {
+                        var raw = window[rawName];
+                        if (typeof raw !== 'function') {
+                            return Promise.reject({ code: 'NOT_READY', message: 'The sugr bridge is not ready yet' });
+                        }
+                        return raw(name, json === undefined ? null : json, window.location.origin);
+                    };
+                }
+                window.invoke = forward('__sugrInvoke');
+                window.emit = forward('__sugrEmit');
+            })();
             window.__sugrEvents__ = (function () {
                 const listeners = {};
                 return {
@@ -60,7 +81,7 @@ public final class Window {
             })();
             (function () {
                 function ping() {
-                    if (typeof window.invoke === 'function') {
+                    if (typeof window.__sugrInvoke === 'function') {
                         window.invoke('__sugrReady', '[]');
                     } else {
                         setTimeout(ping, 0);
@@ -161,6 +182,7 @@ public final class Window {
     private final Consumer<Window> onFocus;
     private final Consumer<Window> onBlur;
     private final ResizeListener onResize;
+    private final List<String> allowedOrigins;
 
     private volatile java.util.function.Consumer<Boolean> onMaximizeChange;
 
@@ -181,6 +203,8 @@ public final class Window {
     private UiDispatcher uiDispatcher;
     private AssetServer assetServer;
     private String targetUrl;
+    /** Set in {@link #open} once the frontend URL (and so its origin) is known; null until then = reject everything. */
+    private volatile OriginPolicy originPolicy;
     private long nativeWindowHandle;
     private MemorySegment nativeWindow = MemorySegment.NULL;
     private final boolean isMain;
@@ -215,6 +239,7 @@ public final class Window {
         this.onFocus = builder.onFocus;
         this.onBlur = builder.onBlur;
         this.onResize = builder.onResize;
+        this.allowedOrigins = List.copyOf(builder.allowedOrigins);
         if (builder.restoreWindowState && builder.appName != null && !builder.appName.isBlank()) {
             this.windowStatePersistor = new WindowStatePersistor(builder.appName);
         }
@@ -737,12 +762,12 @@ public final class Window {
             MemorySegment invokeStub = webview.upcall(MethodHandles.lookup(), this, "onInvoke",
                     MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
                     FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-            webviewBind.invoke(handle, setup.allocateFrom("invoke"), invokeStub, MemorySegment.NULL);
+            webviewBind.invoke(handle, setup.allocateFrom(RAW_INVOKE_BINDING), invokeStub, MemorySegment.NULL);
 
             MemorySegment emitStub = webview.upcall(MethodHandles.lookup(), this, "onEmitFromJs",
                     MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
                     FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-            webviewBind.invoke(handle, setup.allocateFrom("emit"), emitStub, MemorySegment.NULL);
+            webviewBind.invoke(handle, setup.allocateFrom(RAW_EMIT_BINDING), emitStub, MemorySegment.NULL);
 
             targetUrl = switch (frontend) {
                 case Frontend.DevServer dev -> dev.url();
@@ -751,6 +776,7 @@ public final class Window {
                     yield assetServer.baseUrl();
                 }
             };
+            originPolicy = OriginPolicy.forFrontend(targetUrl, allowedOrigins);
             webviewNavigate.invoke(handle, setup.allocateFrom(targetUrl));
         }
 
@@ -960,7 +986,8 @@ public final class Window {
     }
 
     /**
-     * Upcall target for the single "invoke" binding; routes to {@link Bridge#dispatch}.
+     * Upcall target for the single raw invoke binding ({@link #RAW_INVOKE_BINDING}, wrapped
+     * by {@code window.invoke}); checks the caller's origin, then routes to {@link Bridge#dispatch}.
      * The handler may resolve asynchronously (CompletableFuture-backed, e.g. generated
      * by the {@code processor} module) - whichever thread completes it, the reply hops
      * back onto the UI thread via webview_dispatch before calling webview_return.
@@ -970,6 +997,11 @@ public final class Window {
      * pointer is only valid for the duration of this callback.
      */
     private static final String READY_PING_METHOD = "__sugrReady";
+
+    /** Name of the raw webview binding {@link #EVENTS_BOOTSTRAP_JS}'s {@code window.invoke} wraps. */
+    private static final String RAW_INVOKE_BINDING = "__sugrInvoke";
+    /** Name of the raw webview binding {@link #EVENTS_BOOTSTRAP_JS}'s {@code window.emit} wraps. */
+    private static final String RAW_EMIT_BINDING = "__sugrEmit";
 
     private void onInvoke(MemorySegment seq, MemorySegment req, MemorySegment unusedArg) {
         // Nothing may escape this method: it's an FFM upcall, and an exception thrown out of
@@ -998,9 +1030,17 @@ public final class Window {
             return;
         }
 
+        // The ready ping is exempt from the origin check: all it does is reveal the window,
+        // which must happen even if the page ended up somewhere unexpected.
         if (READY_PING_METHOD.equals(request.method())) {
             markWebviewReady();
             reply(seq, "null", false);
+            return;
+        }
+
+        BridgeException forbidden = checkOrigin(request);
+        if (forbidden != null) {
+            replyError(seq, forbidden);
             return;
         }
 
@@ -1017,6 +1057,24 @@ public final class Window {
                 t.printStackTrace();
             }
         });
+    }
+
+    /**
+     * Returns a {@code FORBIDDEN} error if {@code request} didn't come from an allowed
+     * origin (see {@link OriginPolicy} - defense-in-depth only, since the page reports its
+     * own origin), or null if it's fine. Rejections are logged so a misconfigured
+     * {@link Builder#allowOrigin} is easy to spot.
+     */
+    private BridgeException checkOrigin(Bridge.Request request) {
+        OriginPolicy policy = originPolicy;
+        if (policy != null && policy.allows(request.origin())) {
+            return null;
+        }
+        System.err.println("[sugr] rejected bridge call \"" + request.method() + "\" from origin "
+                + request.origin() + " (allowed: " + (policy == null ? "none yet" : policy.allowed())
+                + ") - use allowOrigin() to permit it");
+        return new BridgeException(BridgeException.FORBIDDEN,
+                "Bridge calls are not allowed from origin " + request.origin());
     }
 
     /** Rejects the JS-side promise for {@code seq} with {@code error} as a {@link BridgeException} JSON payload. */
@@ -1061,7 +1119,8 @@ public final class Window {
     }
 
     /**
-     * Upcall target for the "emit" binding; JS -> Java events, routed to {@link EventBus}.
+     * Upcall target for the raw emit binding ({@link #RAW_EMIT_BINDING}, wrapped by
+     * {@code window.emit}); JS -> Java events, origin-checked like invoke, routed to {@link EventBus}.
      * Like {@link #onInvoke}, nothing may escape it: a malformed emit or a failing
      * listener is logged, and the JS-side promise still settles.
      */
@@ -1071,6 +1130,10 @@ public final class Window {
             String reqJson = req.reinterpret(1 << 20).getString(0);
             Bridge.Request request = Bridge.parseRequest(reqJson);
             // Same [name, payloadJson] envelope as invoke(), so the same validation applies.
+            BridgeException forbidden = checkOrigin(request);
+            if (forbidden != null) {
+                throw forbidden;
+            }
             String payload = request.paramsJson() != null ? request.paramsJson() : "null";
             eventBus.dispatch(request.method(), payload);
         } catch (Throwable t) {
@@ -1126,6 +1189,7 @@ public final class Window {
         private String appName;
         private boolean darkTitleBar = false;
         private boolean customTitleBar = false;
+        private final List<String> allowedOrigins = new java.util.ArrayList<>();
 
         public Builder() {
         }
@@ -1309,6 +1373,27 @@ public final class Window {
          */
         public Builder customTitleBar() {
             this.customTitleBar = true;
+            return this;
+        }
+
+        /**
+         * Also accepts bridge calls ({@code invoke}/{@code emit}) from pages at these
+         * origins, e.g. {@code "https://app.example.com"} (a full URL works too - only its
+         * scheme/host/port is used). By default only the window's own frontend origin is
+         * allowed: the embedded asset server's {@code http://127.0.0.1:<port>}, or the
+         * {@link Frontend#devServer} URL's origin. Calls from anywhere else are rejected
+         * with a {@code FORBIDDEN} error.
+         *
+         * <p>This is defense-in-depth, not a security boundary - the page reports its own
+         * origin, so a malicious script running in the window could spoof it. Blocking
+         * navigation away from the app's origin and a Content-Security-Policy come later;
+         * see {@link OriginPolicy}. Throws {@link IllegalArgumentException} for a value
+         * that isn't a valid origin.
+         */
+        public Builder allowOrigin(String... origins) {
+            for (String origin : origins) {
+                allowedOrigins.add(OriginPolicy.requireOrigin(origin));
+            }
             return this;
         }
     }
