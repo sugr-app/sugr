@@ -88,15 +88,19 @@ final class UpdateFlow {
         }
 
         updater.download().whenComplete((ignored, error) -> {
-            if (error != null) {
-                // The failure was already reported through sugr://update-error;
-                // the dialog is for the user who explicitly opted in and would
-                // otherwise be left watching nothing happen.
-                Dialogs.showMessage(window.nativeHandle(), "Update failed",
-                        "The update couldn't be installed. You can try again later.");
-                return;
+            if (error == null) {
+                try {
+                    updater.install();
+                    return;
+                } catch (RuntimeException e) {
+                    // Falls through to the same dialog as a failed download.
+                }
             }
-            updater.install();
+            // The failure was already reported through sugr://update-error;
+            // the dialog is for the user who explicitly opted in and would
+            // otherwise be left watching nothing happen.
+            Dialogs.showMessage(window.nativeHandle(), "Update failed",
+                    "The update couldn't be installed. You can try again later.");
         });
     }
 

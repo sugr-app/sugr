@@ -144,7 +144,7 @@ if (info) {
   await updater.downloadAndInstall(progress => {
     setPercent(progress.percent)
   })
-  // downloadAndInstall's install step restarts the app - this line doesn't run.
+  // Resolves just before the app restarts into the new version.
 }
 ```
 
