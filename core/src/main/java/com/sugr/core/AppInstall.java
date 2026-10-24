@@ -13,8 +13,8 @@ import java.util.Optional;
  * by swapping files in place with no elevation at all, which is what
  * {@code sugr package} now produces by default. A machine-wide install
  * ({@code C:\Program Files}, {@code /usr/bin} from a {@code .deb}) cannot, and
- * has to fall back to re-running an installer or telling the user to download
- * one - so the answer here picks the install strategy.
+ * is left to whoever deployed it (an administrator, a package manager) - so
+ * the answer here picks the install strategy.
  */
 final class AppInstall {
 

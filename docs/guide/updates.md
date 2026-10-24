@@ -51,13 +51,23 @@ version. None of that is code you write; it's what `"updater"` in
 ## Why a signing key is required
 
 The public key is baked into every build; the private key signs every
-release and never leaves your machine or CI secrets. A downloaded update is
-refused unless its Ed25519 signature verifies against that embedded public
-key - **not just SHA-256, and not just HTTPS**. HTTPS stops a
-man-in-the-middle from swapping the file in transit; it does nothing about a
-compromised or misconfigured host serving the wrong bits. The signature is
-what makes it safe for the framework to replace its own executable
-automatically.
+release and never leaves your machine or CI secrets. Two Ed25519
+signatures are checked against that embedded public key - **not just
+SHA-256, and not just HTTPS**:
+
+- the **manifest signature**, before the app believes anything the manifest
+  says. It covers the version, the download URLs and checksum, the release
+  notes and your app's `identifier`, so a compromised or hostile endpoint
+  can't relabel an old signed build as "new" to roll users back to a
+  vulnerable release, put its own text in the update dialog, or point the
+  "download it yourself" link somewhere else;
+- the **artifact signature**, over the downloaded file's bytes, before it
+  replaces anything.
+
+HTTPS stops a man-in-the-middle from swapping files in transit; it does
+nothing about a compromised or misconfigured host serving the wrong bits.
+The signatures are what make it safe for the framework to replace its own
+executable automatically.
 
 There is deliberately no key-recovery flow. Losing the key means you can
 never publish another update your existing users' apps will accept - back it
@@ -78,8 +88,7 @@ optional except `endpoints` and `pubkey`, which together turn the feature on.
     "autoCheck": true,
     "prompt": true,
     "allowDowngrade": false,
-    "allowInsecure": false,
-    "windowsInstallMode": "passive"
+    "allowInsecure": false
   }
 }
 ```
@@ -93,7 +102,6 @@ optional except `endpoints` and `pubkey`, which together turn the feature on.
 | `prompt` | `true` | Show the framework's own native "update available" dialog and drive the whole flow. Set `false` to build your own UI against the events/API below. |
 | `allowDowngrade` | `false` | Accept a manifest whose version is *older* than the running one (useful for a channel rollback). |
 | `allowInsecure` | `false` | Allow `http://` endpoints - testing only, never for production. |
-| `windowsInstallMode` | `"passive"` | `passive` (progress UI, no prompts), `quiet` (silent), or `basicUi` - only used for the rare installer-fallback path, see below. |
 
 ## How an update is applied
 
@@ -110,8 +118,13 @@ Three strategies exist, and the app picks automatically:
 | Strategy | When | UX |
 |---|---|---|
 | **Binary swap** | The install directory is writable (the default per-user install) | Silent, no elevation, a few seconds |
-| **Run installer** | Windows, but the install directory isn't writable (a machine-wide install) | Re-downloads and silently re-runs the `Setup.exe`, one UAC prompt |
+| **Managed** | Windows, but the install directory isn't writable (a machine-wide `Program Files` deployment) | No self-update. The app reports "Managed install - updates are delivered by your administrator" (`onManualRequired` with `managed: true`, no URL) and shows no prompt |
 | **Manual** | Nothing else applies - a `.deb`/`.rpm` owned by a package manager, macOS with no write access | The user is pointed at a download URL instead |
+
+Per-machine installs are treated as IT-managed on purpose: whoever put the
+app in `Program Files` (Intune, SCCM, a GPO, an admin running the installer)
+owns its updates. Re-running the per-user installer from there would only
+create a second copy under `%LOCALAPPDATA%` and leave the managed one stale.
 
 macOS and Linux follow the same shape (`.app` bundle swap on macOS, binary
 swap for a portable Linux install) but - like the rest of `sugr`'s non-Windows
@@ -175,15 +188,18 @@ monorepo with a different CI setup, say):
       "signature": "<base64 Ed25519 over the artifact's bytes>",
       "installerUrl": "https://.../my-app-1.2.0-Setup.exe",
       "installerSha256": "...",
-      "installerSignature": "..."
+      "manifestSignature": "<base64 Ed25519 over the canonical payload below>"
     }
   }
 }
 ```
 
-- The signature covers the **artifact's bytes**, not the manifest - a
-  tampered manifest pointing at a different URL still needs a matching
-  signature for whatever that URL actually serves.
+- `signature` covers the **artifact's bytes**; `manifestSignature` covers
+  the entry's metadata (see below). Both are required - an entry without
+  `manifestSignature` is rejected with `MANIFEST_SIGNATURE_INVALID`.
+- `installerUrl`/`installerSha256` are only ever shown to the user as a
+  manual download link (a `minVersion` gate, a read-only install); the
+  updater never runs an installer itself.
 - `minVersion` tells an app older than it that it can't update automatically
   and should reinstall instead (emits `sugr://update-manual-required`).
 - `rolloutPercentage` (0-100) staggers a release across users, bucketed by a
@@ -193,6 +209,46 @@ monorepo with a different CI setup, say):
 - A dynamic endpoint (server-side logic instead of a static file) can answer
   `204 No Content` for "you're current" instead of a body - the same
   convention Tauri's updater uses.
+
+### The signed manifest payload
+
+`manifestSignature` is an Ed25519 signature, with the same key, over these
+UTF-8 bytes - a header line, then one `key=<byte length>:<value>` line per
+field, in this exact order, each ending in `
+`, with an absent field
+written as length `0`:
+
+```
+sugr-update-manifest-v1
+identifier=15:com.example.app
+version=5:1.2.0
+target=14:windows-x86_64
+format=6:binary
+url=43:https://.../my-app-1.2.0-windows-x86_64.zip
+sha256=64:...
+size=8:26214400
+minVersion=5:1.0.0
+notes=15:Fixes the thing
+installerUrl=0:
+installerSha256=0:
+```
+
+- `identifier` is the app's `identifier` from `sugr.config.json`, so one
+  app's release can't be replayed to another app that shares the key.
+- `target` is the platform key (lowercase); `version`, `minVersion`,
+  `notes` (top-level) and the entry fields are the strings exactly as they
+  appear in the JSON, `size` in decimal.
+- The length prefix keeps it unambiguous with newlines in `notes` - no
+  canonical-JSON rules to reproduce.
+- `pubDate` and `rolloutPercentage` are **not** signed: per-OS builds stamp
+  different dates, and widening a rollout after publishing is the point of
+  having one. Everything else in the entry is - editing `notes`, `version`
+  or a URL in a published manifest by hand makes the app refuse it, so
+  re-run `sugr package` instead.
+
+After the signature passes, a `version` that isn't newer than the running
+app is ignored (unless `allowDowngrade` is set), so replaying a genuine
+*older* manifest doesn't roll anyone back either.
 
 ## Options on `sugr package`
 

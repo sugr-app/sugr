@@ -138,6 +138,89 @@ class UpdateVerifierTest {
                 sign(keyPair, payload), publicKeyBase64);
     }
 
+    // ---- manifest signature ----
+
+    private static final String TARGET = "windows-x86_64";
+    private static final String APP_ID = "com.example.app";
+
+    private static String manifestJson(String version, String notes, String url, String manifestSignature) {
+        return """
+                {"version":"%s","notes":"%s","platforms":{"%s":{"format":"binary","url":"%s",
+                  "sha256":"abc","size":10,"signature":"c2ln","manifestSignature":"%s"}}}
+                """.formatted(version, notes, TARGET, url, manifestSignature);
+    }
+
+    /** A manifest signed by {@code pair} the way {@code sugr package} signs one. */
+    private static String signedManifest(KeyPair pair, String version, String notes, String url) throws Exception {
+        UpdateManifest unsigned = UpdateManifest.parse(manifestJson(version, notes, url, ""), TARGET);
+        return manifestJson(version, notes, url, sign(pair, unsigned.signedPayload(APP_ID, TARGET)));
+    }
+
+    private static UpdateVerifier.VerificationException manifestFailure(String json) {
+        UpdateManifest manifest = UpdateManifest.parse(json, TARGET);
+        return assertThrows(UpdateVerifier.VerificationException.class,
+                () -> UpdateVerifier.verifyManifest(manifest, TARGET, APP_ID, publicKeyBase64));
+    }
+
+    @Test
+    void acceptsAGenuinelySignedManifest() throws Exception {
+        String json = signedManifest(keyPair, "1.2.0", "Fixes things", "https://e.test/a.zip");
+        UpdateVerifier.verifyManifest(UpdateManifest.parse(json, TARGET), TARGET, APP_ID, publicKeyBase64);
+    }
+
+    @Test
+    void rejectsAManifestWhoseVersionWasRaised() throws Exception {
+        // The rollback attack: an old, validly signed artifact relabelled as a
+        // newer version so it gets offered - and installed - as an upgrade.
+        String json = signedManifest(keyPair, "1.0.0", "Fixes things", "https://e.test/a.zip")
+                .replace("\"1.0.0\"", "\"9.9.9\"");
+        assertEquals("MANIFEST_SIGNATURE_INVALID", manifestFailure(json).code());
+    }
+
+    @Test
+    void rejectsAManifestWhoseNotesWereRewritten() throws Exception {
+        // Notes land in a native dialog the user trusts as coming from the app.
+        String json = signedManifest(keyPair, "1.2.0", "Fixes things", "https://e.test/a.zip")
+                .replace("Fixes things", "Call this number for support");
+        assertEquals("MANIFEST_SIGNATURE_INVALID", manifestFailure(json).code());
+    }
+
+    @Test
+    void rejectsAManifestWhoseUrlWasSwapped() throws Exception {
+        String json = signedManifest(keyPair, "1.2.0", "n", "https://e.test/a.zip")
+                .replace("https://e.test/a.zip", "https://evil.test/a.zip");
+        assertEquals("MANIFEST_SIGNATURE_INVALID", manifestFailure(json).code());
+    }
+
+    @Test
+    void rejectsAnUnsignedOrForeignlySignedManifest() throws Exception {
+        assertEquals("MANIFEST_SIGNATURE_INVALID",
+                manifestFailure(manifestJson("1.2.0", "n", "https://e.test/a.zip", "")).code());
+        assertEquals("MANIFEST_SIGNATURE_INVALID",
+                manifestFailure(signedManifest(otherKeyPair, "1.2.0", "n", "https://e.test/a.zip")).code());
+    }
+
+    @Test
+    void rejectsAManifestSignedForADifferentApp() throws Exception {
+        UpdateManifest manifest = UpdateManifest.parse(
+                signedManifest(keyPair, "1.2.0", "n", "https://e.test/a.zip"), TARGET);
+        assertThrows(UpdateVerifier.VerificationException.class,
+                () -> UpdateVerifier.verifyManifest(manifest, TARGET, "com.example.other", publicKeyBase64));
+    }
+
+    @Test
+    void aValidlySignedOlderReleaseIsStillNotADowngradeTarget() throws Exception {
+        // Replaying a genuine old manifest passes the signature check (it *was*
+        // signed) - the version comparison is what refuses it.
+        UpdateManifest old = UpdateManifest.parse(
+                signedManifest(keyPair, "1.0.0", "n", "https://e.test/a.zip"), TARGET);
+        UpdateVerifier.verifyManifest(old, TARGET, APP_ID, publicKeyBase64);
+        assertEquals(UpdateManifest.Verdict.WOULD_DOWNGRADE,
+                old.appliesTo(SemVer.parse("1.1.0"), TARGET, false, 0));
+        assertEquals(UpdateManifest.Verdict.UP_TO_DATE,
+                old.appliesTo(SemVer.parse("1.0.0"), TARGET, false, 0));
+    }
+
     @Test
     void sha256MatchesAKnownValue(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("empty.bin");

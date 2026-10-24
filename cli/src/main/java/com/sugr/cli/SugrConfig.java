@@ -139,7 +139,7 @@ final class SugrConfig {
      * {@code pubkey} to match them against.
      */
     record Updater(List<String> endpoints, String pubkey, String channel, Boolean autoCheck, Boolean prompt,
-                   Boolean allowDowngrade, Boolean allowInsecure, String windowsInstallMode) {
+                   Boolean allowDowngrade, Boolean allowInsecure) {
 
         static final String DEFAULT_CHANNEL = "stable";
 
@@ -164,8 +164,7 @@ final class SugrConfig {
                     boolOrNull(fields, "autoCheck"),
                     boolOrNull(fields, "prompt"),
                     boolOrNull(fields, "allowDowngrade"),
-                    boolOrNull(fields, "allowInsecure"),
-                    stringOrNull(fields, "windowsInstallMode"));
+                    boolOrNull(fields, "allowInsecure"));
         }
 
         String channelOrDefault() {
@@ -184,7 +183,6 @@ final class SugrConfig {
             putIfSet(out, "prompt", prompt);
             putIfSet(out, "allowDowngrade", allowDowngrade);
             putIfSet(out, "allowInsecure", allowInsecure);
-            putIfSet(out, "windowsInstallMode", windowsInstallMode);
             return Json.object(out);
         }
 

@@ -169,13 +169,48 @@ class UpdateManifestTest {
     }
 
     @Test
-    void installerFallbackIsOnlyOfferedWhenFullySpecified() {
+    void readsTheInstallerLinkAndManifestSignature() {
         String withInstaller = """
                 {"version":"1.2.0","platforms":{"windows-x86_64":{
-                  "url":"https://example.test/a.zip","signature":"c2ln",
-                  "installerUrl":"https://example.test/Setup.exe","installerSignature":"c2ln2"}}}
+                  "url":"https://example.test/a.zip","signature":"c2ln","manifestSignature":"bXNpZw==",
+                  "installerUrl":"https://example.test/Setup.exe","installerSha256":"def"}}}
                 """;
-        assertEquals(true, UpdateManifest.parse(withInstaller, TARGET).artifactFor(TARGET).hasInstaller());
-        assertEquals(false, UpdateManifest.parse(manifest(""), TARGET).artifactFor(TARGET).hasInstaller());
+        UpdateManifest.Artifact artifact = UpdateManifest.parse(withInstaller, TARGET).artifactFor(TARGET);
+        assertEquals("https://example.test/Setup.exe", artifact.installerUrl());
+        assertEquals("def", artifact.installerSha256());
+        assertEquals("bXNpZw==", artifact.manifestSignature());
+        assertNull(UpdateManifest.parse(manifest(""), TARGET).artifactFor(TARGET).installerUrl());
+    }
+
+    /**
+     * Same vector as {@code UpdateArtifactsTest.SHARED_PAYLOAD_VECTOR} in the
+     * CLI. If these two ever disagree, every published manifest is rejected.
+     */
+    private static final String SHARED_PAYLOAD_VECTOR = """
+            sugr-update-manifest-v1
+            identifier=15:com.example.app
+            version=5:1.2.0
+            target=14:windows-x86_64
+            format=6:binary
+            url=22:https://e.test/app.zip
+            sha256=6:abc123
+            size=4:1024
+            minVersion=0:
+            notes=15:Fixes
+            things é
+            installerUrl=0:
+            installerSha256=0:
+            """;
+
+    @Test
+    void theSignedPayloadMatchesTheVectorTheCliSigns() {
+        String json = """
+                {"version":"1.2.0","notes":"Fixes\\nthings é","rolloutPercentage":10,
+                 "pubDate":"2026-09-09T10:00:00Z",
+                 "platforms":{"windows-x86_64":{"format":"binary","url":"https://e.test/app.zip",
+                   "sha256":"abc123","size":1024,"signature":"c2ln"}}}
+                """;
+        byte[] payload = UpdateManifest.parse(json, TARGET).signedPayload("com.example.app", TARGET);
+        assertEquals(SHARED_PAYLOAD_VECTOR, new String(payload, java.nio.charset.StandardCharsets.UTF_8));
     }
 }

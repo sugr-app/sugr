@@ -48,8 +48,16 @@ public final class Updater {
     public static final String EVENT_DOWNLOADED = "sugr://update-downloaded";
     /** Emitted when anything goes wrong. Payload: {@code {code, message}}. */
     public static final String EVENT_ERROR = "sugr://update-error";
-    /** Emitted when an update exists but can't be applied automatically. Payload: {@code {version, reason, url}}. */
+    /**
+     * Emitted when an update exists but can't be applied automatically.
+     * Payload: {@code {version, reason, url, managed}} - {@code managed} is true
+     * for an administrator-deployed install, where {@code url} is null because
+     * the user isn't expected to update it themselves.
+     */
     public static final String EVENT_MANUAL_REQUIRED = "sugr://update-manual-required";
+
+    /** The {@code reason} reported for a per-machine install, which this updater never touches. */
+    static final String MANAGED_REASON = "Managed install - updates are delivered by your administrator";
 
     /** A release newer than what's running. */
     public record UpdateInfo(String version, String currentVersion, String notes, String pubDate, long size) {
@@ -240,12 +248,7 @@ public final class Updater {
                     UpdateInstaller.deleteRecursively(current.stagingDir());
                     Relauncher.relaunch();
                 }
-                case RUN_INSTALLER -> {
-                    UpdateInstaller.runInstaller(AppInstall.current().executable(), stagedArtifact,
-                            settings.windowsInstallMode());
-                    System.exit(0);
-                }
-                case MANUAL -> emitManualRequired(current, "This installation can't be updated in place");
+                case MANAGED, MANUAL -> emitManualRequired(current);
             }
         } catch (IOException e) {
             fail("INSTALL_FAILED", "Couldn't apply the update: " + e.getMessage());
@@ -289,25 +292,35 @@ public final class Updater {
     }
 
     private UpdateInfo evaluate(UpdateManifest manifest, SemVer current, String target) {
+        if (manifest.artifactFor(target) == null) {
+            pending = null;
+            return null;
+        }
+        // Before anything in the manifest is believed - its version included,
+        // since an old release relabelled as new is exactly what this stops -
+        // check that the developer's key signed it, for this app and target.
+        try {
+            UpdateVerifier.verifyManifest(manifest, target, metadata.identifier(), settings.pubkey());
+        } catch (UpdateVerifier.VerificationException e) {
+            pending = null;
+            fail(e.code(), e.getMessage());
+            return null;
+        }
+
         UpdateManifest.Verdict verdict =
                 manifest.appliesTo(current, target, settings.allowDowngrade(), rolloutBucket());
         if (verdict != UpdateManifest.Verdict.APPLIES) {
             if (verdict == UpdateManifest.Verdict.BELOW_MIN_VERSION) {
-                UpdateManifest.Artifact artifact = manifest.artifactFor(target);
-                emit(EVENT_MANUAL_REQUIRED, Json.object(new LinkedHashMap<>(Map.of(
-                        "version", Json.of(manifest.version().toString()),
-                        "reason", Json.of("This version is too old to update automatically"),
-                        "url", Json.of(artifact != null && artifact.installerUrl() != null
-                                ? artifact.installerUrl()
-                                : artifact != null ? artifact.url() : "")))).encode());
+                emitManualRequired(manifest.version().toString(),
+                        "This version is too old to update automatically",
+                        downloadUrlFor(manifest.artifactFor(target)), false);
             }
             pending = null;
             return null;
         }
 
         UpdateManifest.Artifact artifact = manifest.artifactFor(target);
-        UpdateInstaller.Strategy strategy =
-                UpdateInstaller.strategyFor(AppInstall.current(), artifact.hasInstaller());
+        UpdateInstaller.Strategy strategy = UpdateInstaller.strategyFor(AppInstall.current());
         UpdateInfo info = new UpdateInfo(manifest.version().toString(), current.toString(),
                 manifest.notes(), manifest.pubDate(), artifact.size());
 
@@ -316,8 +329,8 @@ public final class Updater {
                 .resolve(manifest.version().toString());
         pending = new Pending(manifest, artifact, info, strategy, stagingDir);
 
-        if (strategy == UpdateInstaller.Strategy.MANUAL) {
-            emitManualRequired(pending, "This installation can't be updated in place");
+        if (strategy != UpdateInstaller.Strategy.BINARY_SWAP) {
+            emitManualRequired(pending);
             return info;
         }
         emit(EVENT_AVAILABLE, info.toJson().encode());
@@ -329,22 +342,21 @@ public final class Updater {
         if (current == null) {
             throw new IllegalStateException("No update to download - call check() first");
         }
-        boolean useInstaller = current.strategy() == UpdateInstaller.Strategy.RUN_INSTALLER;
-        String url = useInstaller ? current.artifact().installerUrl() : current.artifact().url();
-        String sha256 = useInstaller ? current.artifact().installerSha256() : current.artifact().sha256();
-        String signature = useInstaller ? current.artifact().installerSignature() : current.artifact().signature();
-        long size = useInstaller ? 0 : current.artifact().size();
-
-        Path file = current.stagingDir().resolve(useInstaller ? "installer.bin" : "artifact.bin");
+        if (current.strategy() != UpdateInstaller.Strategy.BINARY_SWAP) {
+            emitManualRequired(current);
+            throw new IllegalStateException(current.strategy() == UpdateInstaller.Strategy.MANAGED
+                    ? MANAGED_REASON
+                    : "This installation can't be updated in place");
+        }
+        UpdateManifest.Artifact artifact = current.artifact();
+        Path file = current.stagingDir().resolve("artifact.bin");
         try {
-            http.download(URI.create(url), file, size,
+            http.download(URI.create(artifact.url()), file, artifact.size(),
                     (downloaded, total) -> emit(EVENT_PROGRESS, Progress.of(downloaded, total).toJson().encode()));
 
-            UpdateVerifier.verify(file, sha256, size, signature, settings.pubkey());
+            UpdateVerifier.verify(file, artifact.sha256(), artifact.size(), artifact.signature(), settings.pubkey());
 
-            if (!useInstaller) {
-                UpdateInstaller.stage(AppInstall.current().target(), file, current.artifact().format());
-            }
+            UpdateInstaller.stage(AppInstall.current().target(), file, artifact.format());
             stagedArtifact = file;
             emit(EVENT_DOWNLOADED, current.info().toJson().encode());
         } catch (UpdateVerifier.VerificationException e) {
@@ -410,14 +422,31 @@ public final class Updater {
 
     // ---- events ----
 
-    private void emitManualRequired(Pending current, String reason) {
+    private void emitManualRequired(Pending current) {
+        boolean managed = current.strategy() == UpdateInstaller.Strategy.MANAGED;
+        emitManualRequired(current.info().version(),
+                managed ? MANAGED_REASON : "This installation can't be updated in place",
+                managed ? null : downloadUrlFor(current.artifact()),
+                managed);
+    }
+
+    /**
+     * Only ever reached with a manifest whose signature has been checked, so a
+     * URL handed to the frontend (and from there, likely, to the user's
+     * browser) is one the developer actually published.
+     */
+    private void emitManualRequired(String version, String reason, String url, boolean managed) {
         Map<String, Json> payload = new LinkedHashMap<>();
-        payload.put("version", Json.of(current.info().version()));
+        payload.put("version", Json.of(version));
         payload.put("reason", Json.of(reason));
-        payload.put("url", Json.of(current.artifact().installerUrl() != null
-                ? current.artifact().installerUrl()
-                : current.artifact().url()));
+        payload.put("url", url == null ? Json.NULL : Json.of(url));
+        payload.put("managed", Json.of(managed));
         emit(EVENT_MANUAL_REQUIRED, Json.object(payload).encode());
+    }
+
+    /** The full installer when one was published, else the update artifact itself. */
+    private static String downloadUrlFor(UpdateManifest.Artifact artifact) {
+        return artifact.installerUrl() != null ? artifact.installerUrl() : artifact.url();
     }
 
     private void fail(String code, String message) {
@@ -436,6 +465,12 @@ public final class Updater {
                 System.err.println("[sugr] an updater event listener threw: " + e);
             }
         }
+    }
+
+    /** Whether the release found by the last check can be downloaded and installed by this process. */
+    boolean canSelfUpdate() {
+        Pending current = pending;
+        return current != null && current.strategy() == UpdateInstaller.Strategy.BINARY_SWAP;
     }
 
     /** The release found by the last check, for the bridge's {@code sugr.updater.pending}. */

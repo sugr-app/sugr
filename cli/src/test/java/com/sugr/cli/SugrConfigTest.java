@@ -96,7 +96,7 @@ final class SugrConfigTest {
                 { "name": "app", "appVersion": "1.0.0", "updater": {
                     "endpoints": ["https://example.test/latest.json", "https://mirror.test/latest.json"],
                     "pubkey": "a2V5", "channel": "beta", "autoCheck": false, "prompt": false,
-                    "allowDowngrade": true, "allowInsecure": true, "windowsInstallMode": "quiet" } }
+                    "allowDowngrade": true, "allowInsecure": true } }
                 """);
 
         SugrConfig.Updater updater = SugrConfig.load(appDir).updater;
@@ -105,7 +105,6 @@ final class SugrConfigTest {
         assertEquals("beta", updater.channelOrDefault());
         assertEquals(Boolean.FALSE, updater.autoCheck());
         assertEquals(Boolean.TRUE, updater.allowDowngrade());
-        assertEquals("quiet", updater.windowsInstallMode());
     }
 
     @Test
@@ -166,7 +165,6 @@ final class SugrConfigTest {
 
         assertFalse(json.contains("autoCheck"));
         assertFalse(json.contains("channel"));
-        assertFalse(json.contains("windowsInstallMode"));
     }
 
     @Test

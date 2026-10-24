@@ -53,18 +53,19 @@ class UpdateInstallerTest {
     }
 
     @Test
-    void aReadOnlyInstallFallsBackToTheInstallerOnlyWhereOneCanRun() {
-        UpdateInstaller.Strategy strategy =
-                UpdateInstaller.strategyFor(AppInstall.Layout.EXECUTABLE, false, true);
-        assertEquals(Os.isWindows()
-                ? UpdateInstaller.Strategy.RUN_INSTALLER
-                : UpdateInstaller.Strategy.MANUAL, strategy);
+    void aReadOnlyWindowsInstallIsManagedNotReinstalled() {
+        // A Program Files install belongs to whoever deployed it. Re-running the
+        // per-user installer would create a second copy and leave this one stale.
+        assertEquals(UpdateInstaller.Strategy.MANAGED,
+                UpdateInstaller.strategyFor(AppInstall.Layout.EXECUTABLE, false, true));
     }
 
     @Test
-    void aReadOnlyInstallWithNoInstallerIsManual() {
+    void aReadOnlyInstallElsewhereIsManual() {
         assertEquals(UpdateInstaller.Strategy.MANUAL,
                 UpdateInstaller.strategyFor(AppInstall.Layout.EXECUTABLE, false, false));
+        assertEquals(UpdateInstaller.Strategy.MANUAL,
+                UpdateInstaller.strategyFor(AppInstall.Layout.APP_BUNDLE, false, false));
     }
 
     // ---- staging ----

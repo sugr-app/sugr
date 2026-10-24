@@ -101,7 +101,13 @@ export interface UpdateError {
 export interface UpdateManualRequired {
   version: string
   reason: string
-  url: string
+  /** Where the user can download the release themselves; `null` for a managed install. */
+  url: string | null
+  /**
+   * `true` for an administrator-deployed (per-machine) install: updates come
+   * from IT, so show `reason` and don't send the user anywhere.
+   */
+  managed: boolean
 }
 
 /** Name/version/identifier of the running app. */
@@ -210,8 +216,9 @@ export const updater = {
 
   /**
    * Fires when an update exists but this installation can't apply it - a
-   * machine-wide install, a `.deb` owned by the package manager, or a version
-   * too old for the manifest's `minVersion`. Send the user to `url`.
+   * machine-wide install (`managed: true`, updated by IT), a `.deb` owned by
+   * the package manager, or a version too old for the manifest's
+   * `minVersion`. When `url` is set, send the user there.
    */
   onManualRequired(listener: (info: UpdateManualRequired) => void): () => void {
     return subscribe(UPDATE_EVENTS.manualRequired, listener)

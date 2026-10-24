@@ -16,18 +16,21 @@ import java.util.HexFormat;
 /**
  * Checks that a downloaded update is the exact file the developer published.
  *
- * <p>Two separate checks, doing two different jobs:
+ * <p>Three separate checks, doing different jobs:
  *
  * <ul>
+ *   <li>{@link #verifyManifest} runs first, before anything in the manifest
+ *       is believed. Its Ed25519 signature covers the version, the URLs, the
+ *       checksum and the release notes (see {@link UpdateManifest#signedPayload}),
+ *       so an endpoint can't relabel an old signed build as a newer one to roll
+ *       users back, or put its own text in the update dialog.</li>
  *   <li>{@link #sha256} catches <em>accidents</em> - a truncated download, a
  *       corrupted proxy cache - and lets the updater report "the file is
  *       damaged, retry" instead of a confusing signature failure.</li>
- *   <li>{@link #verify} is the actual security boundary. The Ed25519 signature
- *       is computed over the artifact's own bytes, not over the manifest, so
- *       tampering with a manifest to point at a different file doesn't help an
- *       attacker: they'd still need the private key to sign whatever they
- *       substituted. This is why the updater refuses to run at all without a
- *       configured public key.</li>
+ *   <li>{@link #verify} checks a second Ed25519 signature over the artifact's
+ *       own bytes, so what gets installed is exactly what was signed regardless
+ *       of what served it. This is why the updater refuses to run at all
+ *       without a configured public key.</li>
  * </ul>
  *
  * <p>Ed25519 has been in the JDK since 15 ({@code Signature.getInstance("Ed25519")}),
@@ -93,6 +96,46 @@ final class UpdateVerifier {
         if (!verifySignature(artifact, signatureBase64, publicKeyBase64)) {
             throw new VerificationException("SIGNATURE_INVALID",
                     "The artifact's Ed25519 signature doesn't match the configured public key");
+        }
+    }
+
+    /**
+     * Checks the {@code manifestSignature} of {@code manifest}'s entry for
+     * {@code target}. Must pass before the manifest's version, notes or URLs
+     * are used for anything - including deciding whether it's an update.
+     *
+     * @param identifier this app's identifier, which the signature is bound to
+     */
+    static void verifyManifest(UpdateManifest manifest, String target, String identifier,
+                               String publicKeyBase64) throws VerificationException {
+        UpdateManifest.Artifact artifact = manifest.artifactFor(target);
+        if (artifact == null) {
+            throw new VerificationException("MANIFEST_SIGNATURE_INVALID", "The manifest has no entry for " + target);
+        }
+        String signature = artifact.manifestSignature();
+        if (signature == null || signature.isBlank()) {
+            throw new VerificationException("MANIFEST_SIGNATURE_INVALID",
+                    "The manifest entry for " + target + " carries no manifestSignature - "
+                            + "re-publish it with a current `sugr package`");
+        }
+        if (!verifySignature(manifest.signedPayload(identifier, target), signature, publicKeyBase64)) {
+            throw new VerificationException("MANIFEST_SIGNATURE_INVALID",
+                    "The manifest's Ed25519 signature doesn't match the configured public key - "
+                            + "it was altered, or published for a different app");
+        }
+    }
+
+    /** {@link #verifySignature(Path, String, String)} over an in-memory payload. */
+    static boolean verifySignature(byte[] payload, String signatureBase64, String publicKeyBase64) {
+        try {
+            PublicKey key = parsePublicKey(publicKeyBase64);
+            byte[] signature = Base64.getDecoder().decode(signatureBase64.trim());
+            Signature verifier = Signature.getInstance("Ed25519");
+            verifier.initVerify(key);
+            verifier.update(payload);
+            return verifier.verify(signature);
+        } catch (RuntimeException | GeneralSecurityException e) {
+            return false;
         }
     }
 

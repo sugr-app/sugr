@@ -4,6 +4,7 @@ import com.sugr.bridge.Json;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
@@ -23,15 +24,20 @@ import java.util.zip.ZipOutputStream;
  * the app yet, an update artifact is for someone who does. They ship together
  * but nothing else about them is shared.
  *
- * <p>The signature covers the artifact's <em>bytes</em>, not the manifest.
- * That's what makes a tampered manifest useless: swapping in a different URL
- * doesn't help an attacker who can't produce a matching signature for whatever
- * that URL serves.
+ * <p>Two signatures per platform entry, under the same key: {@code signature}
+ * over the artifact's <em>bytes</em>, so what gets installed is exactly what
+ * was built; and {@code manifestSignature} over {@link #signedPayload} - the
+ * version, URLs, checksum, notes and app identifier - so a hostile endpoint
+ * can't relabel an old signed build as new, or rewrite the notes or download
+ * link the app shows its user.
  */
 final class UpdateArtifacts {
 
     /** The manifest filename for the default channel; other channels get {@code latest-<channel>.json}. */
     static final String DEFAULT_MANIFEST = "latest.json";
+
+    /** First line of {@link #signedPayload}; must match {@code com.sugr.core.UpdateManifest.PAYLOAD_HEADER}. */
+    static final String PAYLOAD_HEADER = "sugr-update-manifest-v1";
 
     private UpdateArtifacts() {
     }
@@ -44,13 +50,15 @@ final class UpdateArtifacts {
      * Packs {@code binary} into a signed update artifact and writes the manifest
      * beside it.
      *
-     * @param installer optional platform installer to record as the fallback for
-     *                  installs that can't be updated in place (a machine-wide
-     *                  Windows install); signed the same way when present
-     * @param baseUrl   where the files will be served from - the manifest needs
-     *                  absolute URLs, and only the person publishing knows them
+     * @param identifier the app identifier the runtime checks the manifest
+     *                   signature against - must be what was embedded in the build
+     * @param installer  optional platform installer, recorded (with its checksum,
+     *                   covered by the manifest signature) as the manual download
+     *                   for installs that can't be updated in place
+     * @param baseUrl    where the files will be served from - the manifest needs
+     *                   absolute URLs, and only the person publishing knows them
      */
-    static Result write(Path dest, String name, String version, String channel, Path binary,
+    static Result write(Path dest, String name, String identifier, String version, String channel, Path binary,
                         String installedFileName, Path installer, String baseUrl, String notes,
                         String minVersion, Integer rolloutPercentage, PrivateKey privateKey)
             throws IOException, GeneralSecurityException {
@@ -68,27 +76,41 @@ final class UpdateArtifacts {
         Path signatureFile = dest.resolve(artifactName + ".sig");
         Files.writeString(signatureFile, signature + System.lineSeparator());
 
-        Map<String, Json> entry = new LinkedHashMap<>();
-        entry.put("format", Json.of("binary"));
-        entry.put("url", Json.of(join(baseUrl, artifactName)));
-        entry.put("sha256", Json.of(SigningKeys.sha256(artifact)));
-        entry.put("size", Json.of(Files.size(artifact)));
-        entry.put("signature", Json.of(signature));
+        String format = "binary";
+        String url = join(baseUrl, artifactName);
+        String sha256 = SigningKeys.sha256(artifact);
+        long size = Files.size(artifact);
+        String installerUrl = null;
+        String installerSha256 = null;
         if (installer != null && Files.isRegularFile(installer)) {
-            String installerName = installer.getFileName().toString();
-            entry.put("installerUrl", Json.of(join(baseUrl, installerName)));
-            entry.put("installerSha256", Json.of(SigningKeys.sha256(installer)));
-            entry.put("installerSignature", Json.of(SigningKeys.sign(installer, privateKey)));
+            installerUrl = join(baseUrl, installer.getFileName().toString());
+            installerSha256 = SigningKeys.sha256(installer);
         }
+        String publishedNotes = notes != null && !notes.isBlank() ? notes : null;
+        String publishedMinVersion = minVersion != null && !minVersion.isBlank() ? minVersion : null;
+
+        Map<String, Json> entry = new LinkedHashMap<>();
+        entry.put("format", Json.of(format));
+        entry.put("url", Json.of(url));
+        entry.put("sha256", Json.of(sha256));
+        entry.put("size", Json.of(size));
+        entry.put("signature", Json.of(signature));
+        if (installerUrl != null) {
+            entry.put("installerUrl", Json.of(installerUrl));
+            entry.put("installerSha256", Json.of(installerSha256));
+        }
+        byte[] payload = signedPayload(identifier, version, target, format, url, sha256, size,
+                publishedMinVersion, publishedNotes, installerUrl, installerSha256);
+        entry.put("manifestSignature", Json.of(SigningKeys.sign(payload, privateKey)));
 
         Map<String, Json> manifest = new LinkedHashMap<>();
         manifest.put("version", Json.of(version));
         manifest.put("pubDate", Json.of(Instant.now().toString()));
-        if (notes != null && !notes.isBlank()) {
-            manifest.put("notes", Json.of(notes));
+        if (publishedNotes != null) {
+            manifest.put("notes", Json.of(publishedNotes));
         }
-        if (minVersion != null && !minVersion.isBlank()) {
-            manifest.put("minVersion", Json.of(minVersion));
+        if (publishedMinVersion != null) {
+            manifest.put("minVersion", Json.of(publishedMinVersion));
         }
         if (rolloutPercentage != null) {
             manifest.put("rolloutPercentage", Json.of(rolloutPercentage.intValue()));
@@ -99,6 +121,43 @@ final class UpdateArtifacts {
         Files.writeString(manifestFile, prettyPrint(Json.object(manifest).encode()) + System.lineSeparator());
 
         return new Result(artifact, signatureFile, manifestFile, target);
+    }
+
+    /**
+     * The bytes {@code manifestSignature} covers: a header line, then one
+     * {@code key=<utf8 byte length>:<value>} line per field in this fixed
+     * order, absent values as length 0. Must stay byte-identical to
+     * {@code com.sugr.core.UpdateManifest#signedPayload}, which rebuilds it
+     * from the parsed manifest - both modules' tests pin the same vector.
+     *
+     * <p>Edit {@code notes}, {@code version} or a URL in a published manifest
+     * by hand and the app will (correctly) refuse it; {@code pubDate} and
+     * {@code rolloutPercentage} are deliberately outside the signature so a
+     * rollout can still be widened after publishing.
+     */
+    static byte[] signedPayload(String identifier, String version, String target, String format, String url,
+                                String sha256, long size, String minVersion, String notes,
+                                String installerUrl, String installerSha256) {
+        StringBuilder out = new StringBuilder(PAYLOAD_HEADER).append('\n');
+        field(out, "identifier", identifier);
+        field(out, "version", version);
+        field(out, "target", target.toLowerCase(java.util.Locale.ROOT));
+        field(out, "format", format);
+        field(out, "url", url);
+        field(out, "sha256", sha256);
+        field(out, "size", Long.toString(size));
+        field(out, "minVersion", minVersion);
+        field(out, "notes", notes);
+        field(out, "installerUrl", installerUrl);
+        field(out, "installerSha256", installerSha256);
+        return out.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void field(StringBuilder out, String key, String value) {
+        String v = value == null ? "" : value;
+        out.append(key).append('=')
+                .append(v.getBytes(StandardCharsets.UTF_8).length).append(':')
+                .append(v).append('\n');
     }
 
     /** {@code latest.json} for the default channel, {@code latest-<channel>.json} otherwise. */
