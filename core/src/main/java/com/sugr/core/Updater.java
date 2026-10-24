@@ -95,9 +95,13 @@ public final class Updater {
         void emit(String event, String payloadJson);
     }
 
-    /** A checked-and-selected release, held between {@link #check()} and {@link #install()}. */
-    private record Pending(UpdateManifest manifest, UpdateManifest.Artifact artifact, UpdateInfo info,
-                           UpdateInstaller.Strategy strategy, Path stagingDir) {
+    /** A release a check found and verified the manifest of - available, not yet downloaded. */
+    private record Available(UpdateManifest manifest, UpdateManifest.Artifact artifact, UpdateInfo info,
+                             UpdateInstaller.Strategy strategy) {
+    }
+
+    /** A release whose artifact has been downloaded, verified and unpacked beside the install. */
+    private record Staged(Available release, Path stagingDir) {
     }
 
     private static volatile Updater shared;
@@ -107,20 +111,31 @@ public final class Updater {
     private final AppMetadata.UpdaterSettings settings;
     private final UpdateDownloader http;
     private final List<EventSink> sinks = new CopyOnWriteArrayList<>();
-    private final Executor executor = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "sugr-updater");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final Executor executor;
 
-    private volatile Pending pending;
-    private volatile Path stagedArtifact;
+    /**
+     * Two separate pieces of state, because "a newer version exists" and "a
+     * newer version is ready to install" are different promises: only the
+     * second may lead to {@link #install()}.
+     */
+    private volatile Available available;
+    private volatile Staged staged;
     private CompletableFuture<UpdateInfo> checkInFlight;
     private CompletableFuture<Void> downloadInFlight;
 
     private Updater(AppMetadata metadata, AppMetadata.UpdaterSettings settings) {
+        this(metadata, settings, Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "sugr-updater");
+            thread.setDaemon(true);
+            return thread;
+        }));
+    }
+
+    /** Visible for testing - lets a test hold work in a queue to observe in-flight state. */
+    Updater(AppMetadata metadata, AppMetadata.UpdaterSettings settings, Executor executor) {
         this.metadata = metadata;
         this.settings = settings;
+        this.executor = executor;
         this.http = new UpdateDownloader(settings.allowInsecure());
     }
 
@@ -195,13 +210,19 @@ public final class Updater {
      *
      * <p>Concurrent calls share one request: a frontend that checks on mount
      * while the automatic startup check is already running should produce one
-     * network round trip, not two.
+     * network round trip, not two. A check while a download is running answers
+     * with the release being downloaded rather than fetching a manifest that
+     * could swap the target out from under it.
      *
      * @return the release, or {@code null} when the app is already current
      */
     public synchronized CompletableFuture<UpdateInfo> check() {
         if (checkInFlight != null && !checkInFlight.isDone()) {
             return checkInFlight;
+        }
+        if (downloadInFlight != null && !downloadInFlight.isDone()) {
+            Available current = available;
+            return CompletableFuture.completedFuture(current == null ? null : current.info());
         }
         checkInFlight = CompletableFuture.supplyAsync(this::checkNow, executor);
         return checkInFlight;
@@ -237,28 +258,52 @@ public final class Updater {
      * @throws IllegalStateException if nothing has been downloaded yet
      */
     public void install() {
-        Pending current = pending;
+        applyStagedUpdate();
+        Relauncher.relaunch();
+    }
+
+    /**
+     * The half of {@link #install()} that can fail: swaps the staged version
+     * into place without restarting. Split out so the bridge can report the
+     * outcome to JS <em>before</em> the process exits.
+     *
+     * @throws IllegalStateException if nothing has been downloaded yet, or the swap failed
+     */
+    void applyStagedUpdate() {
+        Staged current = staged;
         if (current == null) {
             throw new IllegalStateException("No update has been downloaded - call check() and download() first");
         }
         try {
-            switch (current.strategy()) {
-                case BINARY_SWAP -> {
-                    UpdateInstaller.applyStaged(AppInstall.current().target());
-                    UpdateInstaller.deleteRecursively(current.stagingDir());
-                    Relauncher.relaunch();
-                }
-                case MANAGED, MANUAL -> emitManualRequired(current);
-            }
+            UpdateInstaller.applyStaged(AppInstall.current().target());
         } catch (IOException e) {
             fail("INSTALL_FAILED", "Couldn't apply the update: " + e.getMessage());
             throw new IllegalStateException("Couldn't apply the update", e);
         }
+        staged = null;
+        UpdateInstaller.deleteRecursively(current.stagingDir());
     }
 
-    /** True once an update has been downloaded, verified and staged. */
+    /**
+     * {@link #check()} then {@link #download()} then {@link #applyStagedUpdate()},
+     * without the restart. Completes {@code true} when an update was applied
+     * and the caller should relaunch, {@code false} when there was nothing new.
+     */
+    CompletableFuture<Boolean> downloadAndApply() {
+        return check().thenCompose(info -> {
+            if (info == null) {
+                return CompletableFuture.completedFuture(false);
+            }
+            return download().thenApply(ignored -> {
+                applyStagedUpdate();
+                return true;
+            });
+        });
+    }
+
+    /** True once an update has been downloaded, verified and staged - not merely found by a check. */
     public boolean isReadyToInstall() {
-        return pending != null;
+        return staged != null;
     }
 
     // ---- the work, all on the updater thread ----
@@ -291,9 +336,14 @@ public final class Updater {
         return null;
     }
 
-    private UpdateInfo evaluate(UpdateManifest manifest, SemVer current, String target) {
+    /** Visible for testing - decides what a fetched manifest means for this app, and records it. */
+    UpdateInfo evaluate(UpdateManifest manifest, SemVer current, String target) {
+        return evaluate(manifest, current, target, UpdateInstaller.strategyFor(AppInstall.current()));
+    }
+
+    UpdateInfo evaluate(UpdateManifest manifest, SemVer current, String target, UpdateInstaller.Strategy strategy) {
         if (manifest.artifactFor(target) == null) {
-            pending = null;
+            available = null;
             return null;
         }
         // Before anything in the manifest is believed - its version included,
@@ -302,35 +352,41 @@ public final class Updater {
         try {
             UpdateVerifier.verifyManifest(manifest, target, metadata.identifier(), settings.pubkey());
         } catch (UpdateVerifier.VerificationException e) {
-            pending = null;
+            available = null;
             fail(e.code(), e.getMessage());
             return null;
         }
 
-        UpdateManifest.Verdict verdict =
-                manifest.appliesTo(current, target, settings.allowDowngrade(), rolloutBucket());
+        // Only touch the persisted install id when a staged rollout actually
+        // needs a bucket - a 100% release is the same answer for everyone.
+        int bucket = manifest.rolloutPercentage() >= 100 ? 0 : rolloutBucket();
+        UpdateManifest.Verdict verdict = manifest.appliesTo(current, target, settings.allowDowngrade(), bucket);
         if (verdict != UpdateManifest.Verdict.APPLIES) {
             if (verdict == UpdateManifest.Verdict.BELOW_MIN_VERSION) {
                 emitManualRequired(manifest.version().toString(),
                         "This version is too old to update automatically",
                         downloadUrlFor(manifest.artifactFor(target)), false);
             }
-            pending = null;
+            available = null;
             return null;
         }
 
         UpdateManifest.Artifact artifact = manifest.artifactFor(target);
-        UpdateInstaller.Strategy strategy = UpdateInstaller.strategyFor(AppInstall.current());
         UpdateInfo info = new UpdateInfo(manifest.version().toString(), current.toString(),
                 manifest.notes(), manifest.pubDate(), artifact.size());
+        Available found = new Available(manifest, artifact, info, strategy);
+        available = found;
 
-        Path stagingDir = AppPaths.cacheDir(metadata.identifier())
-                .resolve("updates")
-                .resolve(manifest.version().toString());
-        pending = new Pending(manifest, artifact, info, strategy, stagingDir);
+        // A staged download of some other release is stale now; one of this
+        // same release is still good and stays ready to install.
+        Staged ready = staged;
+        if (ready != null && !ready.release().info().version().equals(info.version())) {
+            staged = null;
+            UpdateInstaller.deleteRecursively(ready.stagingDir());
+        }
 
         if (strategy != UpdateInstaller.Strategy.BINARY_SWAP) {
-            emitManualRequired(pending);
+            emitManualRequired(found);
             return info;
         }
         emit(EVENT_AVAILABLE, info.toJson().encode());
@@ -338,7 +394,9 @@ public final class Updater {
     }
 
     private void downloadNow() {
-        Pending current = pending;
+        // Captured once: everything below works on this release even if a
+        // later check records a different one.
+        Available current = available;
         if (current == null) {
             throw new IllegalStateException("No update to download - call check() first");
         }
@@ -348,8 +406,17 @@ public final class Updater {
                     ? MANAGED_REASON
                     : "This installation can't be updated in place");
         }
+        Staged ready = staged;
+        if (ready != null && ready.release() == current) {
+            emit(EVENT_DOWNLOADED, current.info().toJson().encode());
+            return;
+        }
+
         UpdateManifest.Artifact artifact = current.artifact();
-        Path file = current.stagingDir().resolve("artifact.bin");
+        Path stagingDir = AppPaths.cacheDir(metadata.identifier())
+                .resolve("updates")
+                .resolve(current.info().version());
+        Path file = stagingDir.resolve("artifact.bin");
         try {
             http.download(URI.create(artifact.url()), file, artifact.size(),
                     (downloaded, total) -> emit(EVENT_PROGRESS, Progress.of(downloaded, total).toJson().encode()));
@@ -357,13 +424,13 @@ public final class Updater {
             UpdateVerifier.verify(file, artifact.sha256(), artifact.size(), artifact.signature(), settings.pubkey());
 
             UpdateInstaller.stage(AppInstall.current().target(), file, artifact.format());
-            stagedArtifact = file;
+            staged = new Staged(current, stagingDir);
             emit(EVENT_DOWNLOADED, current.info().toJson().encode());
         } catch (UpdateVerifier.VerificationException e) {
             // A file that fails verification is never kept: leaving it around
             // risks a later run treating it as a resumable partial download.
-            UpdateInstaller.deleteRecursively(current.stagingDir());
-            pending = null;
+            UpdateInstaller.deleteRecursively(stagingDir);
+            available = null;
             fail(e.code(), e.getMessage());
             throw new IllegalStateException(e.getMessage(), e);
         } catch (InterruptedException e) {
@@ -422,7 +489,7 @@ public final class Updater {
 
     // ---- events ----
 
-    private void emitManualRequired(Pending current) {
+    private void emitManualRequired(Available current) {
         boolean managed = current.strategy() == UpdateInstaller.Strategy.MANAGED;
         emitManualRequired(current.info().version(),
                 managed ? MANAGED_REASON : "This installation can't be updated in place",
@@ -469,13 +536,13 @@ public final class Updater {
 
     /** Whether the release found by the last check can be downloaded and installed by this process. */
     boolean canSelfUpdate() {
-        Pending current = pending;
+        Available current = available;
         return current != null && current.strategy() == UpdateInstaller.Strategy.BINARY_SWAP;
     }
 
-    /** The release found by the last check, for the bridge's {@code sugr.updater.pending}. */
-    UpdateInfo pendingInfo() {
-        Pending current = pending;
+    /** The release found by the last check - available, not necessarily downloaded. */
+    UpdateInfo availableInfo() {
+        Available current = available;
         return current == null ? null : current.info();
     }
 }

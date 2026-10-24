@@ -174,7 +174,11 @@ export const updater = {
     return withProgress(onProgress, () => invoke<void>('sugr.updater.download'))
   },
 
-  /** Applies a downloaded update and restarts the app. Does not resolve - the process is replaced. */
+  /**
+   * Applies a downloaded update and restarts the app. Resolves once the update
+   * is in place, moments before the process restarts; rejects when nothing has
+   * been downloaded yet (see {@link isReadyToInstall}).
+   */
   install(): Promise<void> {
     return invoke<void>('sugr.updater.install')
   },
@@ -184,12 +188,12 @@ export const updater = {
     return invoke<boolean>('sugr.updater.isReadyToInstall')
   },
 
-  /** {@link check}, {@link download} and {@link install} in one call. */
+  /** {@link check}, {@link download} and {@link install} in one call. Resolves just before the restart, or right away when already current. */
   downloadAndInstall(onProgress?: (progress: UpdateProgress) => void): Promise<void> {
     return withProgress(onProgress, () => invoke<void>('sugr.updater.downloadAndInstall'))
   },
 
-  /** Restarts the app. Useful on its own for changes that only take effect at startup. */
+  /** Restarts the app, resolving just before it exits. Useful on its own for changes that only take effect at startup. */
   relaunch(): Promise<void> {
     return invoke<void>('sugr.updater.relaunch')
   },

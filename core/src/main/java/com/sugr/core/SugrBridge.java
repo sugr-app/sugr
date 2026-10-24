@@ -6,6 +6,7 @@ import com.sugr.bridge.Json;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * The framework's own bridge methods - the first namespace {@code sugr} owns
@@ -51,23 +52,42 @@ final class SugrBridge {
             return updater.download().thenApply(ignored -> "null");
         });
 
+        // install/relaunch end the process, so they're async on purpose: the
+        // swap runs off the UI thread, the reply goes back to JS, and only then
+        // does a separate thread exit. A sync handler would run on the UI
+        // thread and call System.exit inside the webview's native callback.
         bridge.registerAsync("sugr.updater.downloadAndInstall", params -> {
             Updater updater = require();
-            return updater.downloadAndInstall().thenApply(ignored -> "null");
+            return updater.downloadAndApply().thenApply(applied -> {
+                if (applied) {
+                    Relauncher.relaunchSoon();
+                }
+                return "null";
+            });
         });
 
-        bridge.register("sugr.updater.install", params -> {
-            require().install();
-            return "null";
+        bridge.registerAsync("sugr.updater.install", params -> {
+            Updater updater = require();
+            return CompletableFuture.supplyAsync(() -> {
+                updater.applyStagedUpdate();
+                Relauncher.relaunchSoon();
+                return "null";
+            }, SugrBridge::offUiThread);
         });
 
         bridge.register("sugr.updater.isReadyToInstall", params ->
                 String.valueOf(Updater.shared() != null && Updater.shared().isReadyToInstall()));
 
-        bridge.register("sugr.updater.relaunch", params -> {
-            Relauncher.relaunch();
-            return "null";
+        bridge.registerAsync("sugr.updater.relaunch", params -> {
+            Relauncher.relaunchSoon();
+            return CompletableFuture.completedFuture("null");
         });
+    }
+
+    private static void offUiThread(Runnable task) {
+        Thread thread = new Thread(task, "sugr-updater-install");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     /**

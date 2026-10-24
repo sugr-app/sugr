@@ -21,19 +21,54 @@ final class Relauncher {
     private Relauncher() {
     }
 
+    /**
+     * How long {@link #relaunchSoon} waits before exiting - enough for a bridge
+     * reply queued on the UI thread to reach the webview first.
+     */
+    private static final long REPLY_GRACE_MS = 300;
+
     /** Spawns a replacement process and calls {@code System.exit(0)}. Does not return. */
     static void relaunch() {
-        AppInstall install = AppInstall.current();
-        if (install.layout() == AppInstall.Layout.UNPACKAGED) {
-            throw new IllegalStateException(
-                    "relaunch() needs a packaged app - this process isn't a native-image binary");
-        }
+        AppInstall install = requirePackaged();
         try {
             spawn(install);
         } catch (IOException e) {
             throw new IllegalStateException("Couldn't relaunch " + install.executable(), e);
         }
         System.exit(0);
+    }
+
+    /**
+     * {@link #relaunch()} from a separate thread after a short grace period, so
+     * a caller on a bridge handler can return its reply first. Exiting from
+     * inside the webview's native callback on the UI thread would drop that
+     * reply and leave the frontend's promise hanging as the window vanishes.
+     *
+     * @throws IllegalStateException immediately, rather than on the later
+     *                               thread, when this isn't a packaged app
+     */
+    static void relaunchSoon() {
+        requirePackaged();
+        Thread thread = new Thread(() -> {
+            try {
+                Thread.sleep(REPLY_GRACE_MS);
+                relaunch();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (RuntimeException e) {
+                System.err.println("[sugr] couldn't relaunch: " + e.getMessage());
+            }
+        }, "sugr-relaunch");
+        thread.start();
+    }
+
+    private static AppInstall requirePackaged() {
+        AppInstall install = AppInstall.current();
+        if (install.layout() == AppInstall.Layout.UNPACKAGED) {
+            throw new IllegalStateException(
+                    "relaunch() needs a packaged app - this process isn't a native-image binary");
+        }
+        return install;
     }
 
     /**
