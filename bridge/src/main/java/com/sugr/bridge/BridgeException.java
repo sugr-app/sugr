@@ -17,6 +17,9 @@ public final class BridgeException extends RuntimeException {
     /** Default code for handler failures that didn't specify their own - see {@link Bridge#toBridgeException}. */
     public static final String INTERNAL_ERROR = "INTERNAL_ERROR";
 
+    /** The {@code invoke()} request itself was malformed (not a {@code [method, paramsJson]} array) - see {@link Bridge#parseRequest}. */
+    public static final String BAD_REQUEST = "BAD_REQUEST";
+
     private final String code;
     private final Json data;
 
