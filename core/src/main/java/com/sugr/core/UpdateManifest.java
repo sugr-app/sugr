@@ -2,6 +2,7 @@ package com.sugr.core;
 
 import com.sugr.bridge.Json;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -26,8 +27,8 @@ import java.util.Map;
  *       "format": "binary",
  *       "url": "https://.../app-1.0.4-windows-x86_64.zip",
  *       "sha256": "...", "size": 26214400, "signature": "<base64 Ed25519>",
- *       "installerUrl": "https://.../app-1.0.4-Setup.exe",
- *       "installerSha256": "...", "installerSignature": "..."
+ *       "installerUrl": "https://.../app-1.0.4-Setup.exe", "installerSha256": "...",
+ *       "manifestSignature": "<base64 Ed25519 over signedPayload()>"
  *     }
  *   }
  * }
@@ -37,22 +38,35 @@ import java.util.Map;
  * ({@code url}/{@code signature} at the top level) - also Tauri's convention,
  * and accepted here so a server that already knows the caller's platform
  * doesn't have to echo a whole platform map back.
+ *
+ * <p>Nothing in here is trusted until {@link UpdateVerifier#verifyManifest}
+ * has checked the entry's {@code manifestSignature} - see
+ * {@link #signedPayload} for exactly which fields that covers.
+ *
+ * @param rawVersion    {@code version} exactly as published, which is what got
+ *                      signed - {@link #version} is its parsed form
+ * @param rawMinVersion {@code minVersion} exactly as published, or null
  */
 record UpdateManifest(SemVer version, String notes, String pubDate, SemVer minVersion,
-                      int rolloutPercentage, Map<String, Artifact> platforms) {
+                      int rolloutPercentage, Map<String, Artifact> platforms,
+                      String rawVersion, String rawMinVersion) {
+
+    /** First line of {@link #signedPayload} - bumped if the covered field set ever changes. */
+    static final String PAYLOAD_HEADER = "sugr-update-manifest-v1";
 
     /**
      * One downloadable release for one platform. {@code url} is the update
      * artifact proper (the bare executable or {@code .app} bundle, archived);
-     * {@code installerUrl} is the optional fallback used when the install
-     * location isn't writable and the only way in is to re-run an installer.
+     * {@code installerUrl} is the optional full installer, only ever offered to
+     * the user as a manual download link - the updater never runs it.
+     *
+     * @param signature         Ed25519 over the artifact's bytes
+     * @param manifestSignature Ed25519 over {@link #signedPayload} for this entry
+     * @param rawFormat         {@code format} exactly as published (null when absent)
      */
     record Artifact(Format format, String url, String sha256, long size, String signature,
-                    String installerUrl, String installerSha256, String installerSignature) {
-
-        boolean hasInstaller() {
-            return installerUrl != null && installerSignature != null;
-        }
+                    String installerUrl, String installerSha256, String manifestSignature,
+                    String rawFormat) {
     }
 
     /** What {@code url} contains, which decides how the download gets applied. */
@@ -100,7 +114,8 @@ record UpdateManifest(SemVer version, String notes, String pubDate, SemVer minVe
     static UpdateManifest parse(String json, String fallbackTarget) {
         Map<String, Json> fields = Json.parse(json).asObject();
 
-        SemVer version = SemVer.parseOrNull(string(fields, "version"));
+        String rawVersion = string(fields, "version");
+        SemVer version = SemVer.parseOrNull(rawVersion);
         if (version == null) {
             throw new IllegalArgumentException("Update manifest has no usable \"version\"");
         }
@@ -125,13 +140,16 @@ record UpdateManifest(SemVer version, String notes, String pubDate, SemVer minVe
         }
 
         int rollout = (int) Math.round(number(fields, "rolloutPercentage", DEFAULT_ROLLOUT));
+        String rawMinVersion = string(fields, "minVersion");
         return new UpdateManifest(
                 version,
                 string(fields, "notes"),
                 string(fields, "pubDate"),
-                SemVer.parseOrNull(string(fields, "minVersion")),
+                SemVer.parseOrNull(rawMinVersion),
                 Math.max(0, Math.min(100, rollout)),
-                Map.copyOf(platforms));
+                Map.copyOf(platforms),
+                rawVersion,
+                rawMinVersion);
     }
 
     private static Artifact parseArtifact(Map<String, Json> fields) {
@@ -143,15 +161,69 @@ record UpdateManifest(SemVer version, String notes, String pubDate, SemVer minVe
             // better dropped here than surfaced as an update that always fails.
             return null;
         }
+        String rawFormat = string(fields, "format");
         return new Artifact(
-                Format.parse(string(fields, "format")),
+                Format.parse(rawFormat),
                 url,
                 string(fields, "sha256"),
                 (long) number(fields, "size", 0),
                 signature,
                 string(fields, "installerUrl"),
                 string(fields, "installerSha256"),
-                string(fields, "installerSignature"));
+                string(fields, "manifestSignature"),
+                rawFormat);
+    }
+
+    /**
+     * The exact bytes an entry's {@code manifestSignature} is computed over:
+     * everything the updater acts on or shows the user before the artifact
+     * itself has been downloaded and verified.
+     *
+     * <p>Without this, the artifact signature alone would let a hostile or
+     * compromised endpoint replay an <em>old</em> signed build labelled as a
+     * new version (a rollback to a known-vulnerable release), put arbitrary
+     * text in the native update dialog, or point the "download it yourself"
+     * link anywhere it liked. Binding the identifier stops a release of one app
+     * being replayed to another app signed with the same key; binding the
+     * target stops one platform's build being offered to another.
+     *
+     * <p>Format: a header line, then one {@code key=<utf8 byte length>:<value>}
+     * line per field, in a fixed order, absent values as length 0. The length
+     * prefix keeps it unambiguous when {@code notes} contains newlines or
+     * {@code =}, with no canonical-JSON rules to get subtly wrong on either
+     * side. {@code pubDate} and {@code rolloutPercentage} are left out on
+     * purpose: per-OS builds stamp different dates, and a rollout is meant to
+     * be edited after publishing.
+     *
+     * <p>{@code sugr package} builds the same bytes in
+     * {@code com.sugr.cli.UpdateArtifacts#signedPayload}; both modules' tests
+     * pin them to one shared vector.
+     */
+    byte[] signedPayload(String identifier, String target) {
+        Artifact artifact = artifactFor(target);
+        if (artifact == null) {
+            throw new IllegalArgumentException("No artifact for " + target);
+        }
+        StringBuilder out = new StringBuilder(PAYLOAD_HEADER).append('\n');
+        field(out, "identifier", identifier);
+        field(out, "version", rawVersion);
+        field(out, "target", target.toLowerCase(Locale.ROOT));
+        field(out, "format", artifact.rawFormat());
+        field(out, "url", artifact.url());
+        field(out, "sha256", artifact.sha256());
+        field(out, "size", Long.toString(artifact.size()));
+        field(out, "minVersion", rawMinVersion);
+        field(out, "notes", notes);
+        field(out, "installerUrl", artifact.installerUrl());
+        field(out, "installerSha256", artifact.installerSha256());
+        return out.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void field(StringBuilder out, String key, String value) {
+        String v = value == null ? "" : value;
+        out.append(key).append('=')
+                .append(v.getBytes(StandardCharsets.UTF_8).length).append(':')
+                .append(v).append('\n');
     }
 
     /** The entry for {@code target} (e.g. {@code "windows-x86_64"}), or null when this release skips it. */

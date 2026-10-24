@@ -52,7 +52,6 @@ class AppMetadataTest {
         assertTrue(updater.prompt());
         assertFalse(updater.allowDowngrade());
         assertFalse(updater.allowInsecure());
-        assertEquals("passive", updater.windowsInstallMode());
         assertTrue(updater.isUsable());
         assertNull(updater.unusableReason());
     }
@@ -63,7 +62,7 @@ class AppMetadataTest {
                 {"name":"a","version":"1.0.0","updater":{
                   "endpoints":["https://example.test/beta.json"],
                   "pubkey":"a2V5","channel":"beta","autoCheck":false,"prompt":false,
-                  "allowDowngrade":true,"allowInsecure":true,"windowsInstallMode":"quiet"}}
+                  "allowDowngrade":true,"allowInsecure":true}}
                 """).updater();
 
         assertEquals("beta", updater.channel());
@@ -71,7 +70,6 @@ class AppMetadataTest {
         assertFalse(updater.prompt());
         assertTrue(updater.allowDowngrade());
         assertTrue(updater.allowInsecure());
-        assertEquals("quiet", updater.windowsInstallMode());
     }
 
     @Test

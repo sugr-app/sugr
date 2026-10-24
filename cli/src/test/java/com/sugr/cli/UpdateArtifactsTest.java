@@ -102,7 +102,7 @@ class UpdateArtifactsTest {
         Files.writeString(binary, "pretend this is a native binary");
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "sql-client", "1.0.4", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "sql-client", "com.example.app", "1.0.4", "stable",
                 binary, "sql-client.exe", null, "https://example.test/download", "Fixes things",
                 null, null, SigningKeys.decrypt(generated.keyFileContent(), ""));
 
@@ -132,7 +132,7 @@ class UpdateArtifactsTest {
         Files.writeString(binary, "release bytes");
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "2.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "2.0.0", "stable",
                 binary, "app.exe", null, "https://e.test", null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), "pw"));
 
@@ -155,7 +155,7 @@ class UpdateArtifactsTest {
         Files.writeString(binary, "bytes");
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, "https://e.test", null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), ""));
 
@@ -174,7 +174,7 @@ class UpdateArtifactsTest {
         Files.write(binary, content);
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, "https://e.test", null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), ""));
 
@@ -195,14 +195,93 @@ class UpdateArtifactsTest {
         Path installer = dest.resolve("app-1.0.0-Setup.exe");
         Files.writeString(installer, "installer bytes");
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", installer, "https://e.test", null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), ""));
 
         Map<String, Json> entry = platformEntry(result.manifest());
         assertEquals("https://e.test/app-1.0.0-Setup.exe", entry.get("installerUrl").asString());
-        assertTrue(verify(installer, entry.get("installerSignature").asString(),
-                generated.publicKeyBase64()), "the installer fallback must be signed too");
+        assertEquals(SigningKeys.sha256(installer), entry.get("installerSha256").asString());
+        // The installer link is shown to users, so the manifest signature has to cover it.
+        assertTrue(verifyBytes(payloadOf(result.manifest(), "com.example.app"),
+                entry.get("manifestSignature").asString(), generated.publicKeyBase64()));
+    }
+
+    // ---- manifest signature ----
+
+    /** The vector {@code UpdateManifestTest} in core pins too - the two implementations must agree. */
+    static final String SHARED_PAYLOAD_VECTOR = """
+            sugr-update-manifest-v1
+            identifier=15:com.example.app
+            version=5:1.2.0
+            target=14:windows-x86_64
+            format=6:binary
+            url=22:https://e.test/app.zip
+            sha256=6:abc123
+            size=4:1024
+            minVersion=0:
+            notes=15:Fixes
+            things é
+            installerUrl=0:
+            installerSha256=0:
+            """;
+
+    @Test
+    void theSignedPayloadMatchesTheVectorTheRuntimeChecks() {
+        byte[] payload = UpdateArtifacts.signedPayload("com.example.app", "1.2.0", "windows-x86_64", "binary",
+                "https://e.test/app.zip", "abc123", 1024, null, "Fixes\nthings é", null, null);
+        assertEquals(SHARED_PAYLOAD_VECTOR, new String(payload, StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void theManifestSignatureCoversVersionNotesAndUrl(@TempDir Path dir) throws Exception {
+        SigningKeys.Generated generated = keyPair("");
+        Path binary = dir.resolve("app.exe");
+        Files.writeString(binary, "bytes");
+        Path dest = Files.createDirectory(dir.resolve("dist"));
+
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
+                binary, "app.exe", null, "https://e.test", "Notes", "0.9.0", 50,
+                SigningKeys.decrypt(generated.keyFileContent(), ""));
+
+        String signature = platformEntry(result.manifest()).get("manifestSignature").asString();
+        String publicKey = generated.publicKeyBase64();
+        assertTrue(verifyBytes(payloadOf(result.manifest(), "com.example.app"), signature, publicKey));
+
+        // A different app sharing the same key must not accept this release.
+        assertFalse(verifyBytes(payloadOf(result.manifest(), "com.example.other"), signature, publicKey));
+
+        // Hand-edit the version and the signature no longer holds.
+        Path edited = dir.resolve("edited.json");
+        Files.writeString(edited, Files.readString(result.manifest()).replace("\"1.0.0\"", "\"9.0.0\""));
+        assertFalse(verifyBytes(payloadOf(edited, "com.example.app"), signature, publicKey));
+    }
+
+    /** Rebuilds the payload from a written manifest the way the runtime does from what it fetched. */
+    private static byte[] payloadOf(Path manifestFile, String identifier) throws Exception {
+        Map<String, Json> manifest = manifestOf(manifestFile);
+        Map<String, Json> platforms = manifest.get("platforms").asObject();
+        String target = platforms.keySet().iterator().next();
+        Map<String, Json> entry = platforms.get(target).asObject();
+        return UpdateArtifacts.signedPayload(identifier, manifest.get("version").asString(), target,
+                string(entry, "format"), string(entry, "url"), string(entry, "sha256"),
+                (long) entry.get("size").asNumber(), string(manifest, "minVersion"), string(manifest, "notes"),
+                string(entry, "installerUrl"), string(entry, "installerSha256"));
+    }
+
+    private static String string(Map<String, Json> fields, String key) {
+        Json value = fields.get(key);
+        return value == null || value.isNull() ? null : value.asString();
+    }
+
+    private static boolean verifyBytes(byte[] payload, String signatureBase64, String publicKeyBase64)
+            throws Exception {
+        PublicKey key = KeyFactory.getInstance("Ed25519")
+                .generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(publicKeyBase64)));
+        Signature verifier = Signature.getInstance("Ed25519");
+        verifier.initVerify(key);
+        verifier.update(payload);
+        return verifier.verify(Base64.getDecoder().decode(signatureBase64));
     }
 
     @Test
@@ -212,7 +291,7 @@ class UpdateArtifactsTest {
         Files.writeString(binary, "bytes");
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, "https://e.test", null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), ""));
 
@@ -227,13 +306,13 @@ class UpdateArtifactsTest {
         PrivateKey key = SigningKeys.decrypt(generated.keyFileContent(), "");
 
         Path withBoth = Files.createDirectory(dir.resolve("a"));
-        UpdateArtifacts.Result gated = UpdateArtifacts.write(withBoth, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result gated = UpdateArtifacts.write(withBoth, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, "https://e.test", null, "0.9.0", 25, key);
         assertEquals("0.9.0", manifestOf(gated.manifest()).get("minVersion").asString());
         assertEquals(25, (int) manifestOf(gated.manifest()).get("rolloutPercentage").asNumber());
 
         Path without = Files.createDirectory(dir.resolve("b"));
-        UpdateArtifacts.Result plain = UpdateArtifacts.write(without, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result plain = UpdateArtifacts.write(without, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, "https://e.test", null, null, null, key);
         assertNull(manifestOf(plain.manifest()).get("minVersion"));
         assertNull(manifestOf(plain.manifest()).get("rolloutPercentage"));
@@ -254,7 +333,7 @@ class UpdateArtifactsTest {
         Files.writeString(binary, "bytes");
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, null, null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), ""));
 
@@ -269,7 +348,7 @@ class UpdateArtifactsTest {
         Files.writeString(binary, "bytes");
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, "https://e.test/dl/", null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), ""));
 
@@ -289,7 +368,7 @@ class UpdateArtifactsTest {
         Files.writeString(binary, "bytes");
         Path dest = Files.createDirectory(dir.resolve("dist"));
 
-        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "1.0.0", "stable",
+        UpdateArtifacts.Result result = UpdateArtifacts.write(dest, "app", "com.example.app", "1.0.0", "stable",
                 binary, "app.exe", null, "https://e.test", null, null, null,
                 SigningKeys.decrypt(generated.keyFileContent(), ""));
 

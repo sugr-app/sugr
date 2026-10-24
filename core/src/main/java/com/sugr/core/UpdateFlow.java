@@ -52,7 +52,10 @@ final class UpdateFlow {
                 // a null result just means there's nothing new.
                 return;
             }
-            if (updater.shouldPrompt()) {
+            // A managed or manual install has already been reported through
+            // sugr://update-manual-required; offering "install now" there would
+            // be a promise the updater can't keep.
+            if (updater.shouldPrompt() && updater.canSelfUpdate()) {
                 promptAndInstall(window, updater, info);
             }
         });

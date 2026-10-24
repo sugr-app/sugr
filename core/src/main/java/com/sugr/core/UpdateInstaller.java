@@ -1,6 +1,5 @@
 package com.sugr.core;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -8,7 +7,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 /**
  * Applies a verified update to the installed app.
@@ -23,10 +21,12 @@ import java.util.Locale;
  *       <em>running</em> executable (it only forbids deleting or overwriting
  *       one), which is the trick that makes this work at all - the same one
  *       Squirrel and Wails use.</li>
- *   <li>{@link Strategy#RUN_INSTALLER} - download the platform installer and
- *       re-run it. Needed when the install directory isn't writable by this
- *       user (a machine-wide {@code C:\Program Files} install), and costs a UAC
- *       prompt. This is Tauri's only Windows path.</li>
+ *   <li>{@link Strategy#MANAGED} - a Windows install whose directory this user
+ *       can't write (a machine-wide {@code C:\Program Files} deployment). Those
+ *       are put there by IT, and IT delivers their updates too; the updater
+ *       reports the release and does nothing else. Re-running the per-user
+ *       installer here would only create a second copy under
+ *       {@code %LOCALAPPDATA%} and leave the managed one stale.</li>
  *   <li>{@link Strategy#MANUAL} - nothing safe can be done automatically (a
  *       {@code .deb} that only {@code apt} should touch, an app in a read-only
  *       {@code /Applications}); the user is pointed at a download instead.</li>
@@ -49,7 +49,7 @@ final class UpdateInstaller {
 
     enum Strategy {
         BINARY_SWAP,
-        RUN_INSTALLER,
+        MANAGED,
         MANUAL
     }
 
@@ -57,27 +57,26 @@ final class UpdateInstaller {
     }
 
     /** Picks how an update would be applied to this installation. */
-    static Strategy strategyFor(AppInstall install, boolean hasInstaller) {
-        return strategyFor(install.layout(), install.isWritable(), hasInstaller);
+    static Strategy strategyFor(AppInstall install) {
+        return strategyFor(install.layout(), install.isWritable(), Os.isWindows());
     }
 
     /**
      * The strategy decision on its own terms, so it can be reasoned about (and
      * tested) without a real installed app.
-     *
-     * @param hasInstaller whether the manifest offers an installer to fall back to
      */
-    static Strategy strategyFor(AppInstall.Layout layout, boolean writable, boolean hasInstaller) {
+    static Strategy strategyFor(AppInstall.Layout layout, boolean writable, boolean windows) {
         if (layout == AppInstall.Layout.UNPACKAGED) {
             return Strategy.MANUAL;
         }
         if (writable) {
             return Strategy.BINARY_SWAP;
         }
-        // Not writable: only Windows has a silent-capable installer to re-run.
-        // A .deb's /usr/bin/<app> belongs to the package manager, and macOS has
-        // no unattended install we can trigger without a privileged helper.
-        return hasInstaller && Os.isWindows() ? Strategy.RUN_INSTALLER : Strategy.MANUAL;
+        // Not writable. On Windows that means a per-machine install, which is
+        // an administrator's to update. A .deb's /usr/bin/<app> belongs to the
+        // package manager, and macOS has no unattended install we can trigger
+        // without a privileged helper - both get a download link instead.
+        return windows ? Strategy.MANAGED : Strategy.MANUAL;
     }
 
     /**
@@ -190,46 +189,6 @@ final class UpdateInstaller {
             // stop the app from starting.
             System.err.println("[sugr] couldn't remove a previous version's files: " + e.getMessage());
         }
-    }
-
-    /**
-     * Runs a downloaded installer after this process exits, then starts the app
-     * again.
-     *
-     * <p>The indirection through a detached shell is required, not stylistic:
-     * an installer cannot overwrite the executable of a running process, so the
-     * app has to be gone before it starts - which means something other than
-     * the app has to be the thing that starts it.
-     *
-     * @param installMode {@code passive} (progress bar, no prompts),
-     *                    {@code quiet} (nothing at all) or {@code basicUi} -
-     *                    the same vocabulary Tauri uses
-     */
-    static void runInstaller(Path executable, Path installer, String installMode) throws IOException {
-        if (!Os.isWindows()) {
-            throw new IOException("Running an installer is only supported on Windows");
-        }
-        String silentFlag = switch (installMode == null ? "" : installMode.toLowerCase(Locale.ROOT)) {
-            case "basicui" -> "";
-            // NSIS takes /S for silent; there's no separate passive mode, so
-            // passive and quiet both run silently and differ only in that
-            // passive lets the installer's own progress window show.
-            default -> "/S";
-        };
-
-        long pid = ProcessHandle.current().pid();
-        List<String> command = new ArrayList<>(List.of(
-                "cmd", "/c", "start", "", "/min", "cmd", "/c",
-                // Wait for this process to disappear before touching its files.
-                "waitfor /t 30 sugrUpdate 2>nul & "
-                        + "taskkill /pid " + pid + " /f >nul 2>&1 & "
-                        + "\"" + installer + "\" " + silentFlag + " & "
-                        + "start \"\" \"" + executable + "\""));
-
-        new ProcessBuilder(command)
-                .redirectOutput(ProcessBuilder.Redirect.to(new File("NUL")))
-                .redirectError(ProcessBuilder.Redirect.to(new File("NUL")))
-                .start();
     }
 
     /** Where a staged replacement lives - always beside the target, so the final move never crosses volumes. */

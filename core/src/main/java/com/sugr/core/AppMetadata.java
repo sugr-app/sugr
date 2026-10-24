@@ -110,8 +110,7 @@ final class AppMetadata {
      * verify what it downloads.
      */
     record UpdaterSettings(List<String> endpoints, String pubkey, String channel, boolean autoCheck,
-                           boolean prompt, boolean allowDowngrade, boolean allowInsecure,
-                           String windowsInstallMode) {
+                           boolean prompt, boolean allowDowngrade, boolean allowInsecure) {
 
         static final String DEFAULT_CHANNEL = "stable";
 
@@ -136,8 +135,7 @@ final class AppMetadata {
                     bool(fields, "autoCheck", true),
                     bool(fields, "prompt", true),
                     bool(fields, "allowDowngrade", false),
-                    bool(fields, "allowInsecure", false),
-                    string(fields, "windowsInstallMode", "passive"));
+                    bool(fields, "allowInsecure", false));
         }
 
         /**

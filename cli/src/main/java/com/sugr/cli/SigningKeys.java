@@ -174,6 +174,14 @@ final class SigningKeys {
         return Base64.getEncoder().encodeToString(signer.sign());
     }
 
+    /** Signs an in-memory payload - the manifest's canonical fields - returning base64. */
+    static String sign(byte[] payload, PrivateKey privateKey) throws GeneralSecurityException {
+        Signature signer = Signature.getInstance("Ed25519");
+        signer.initSign(privateKey);
+        signer.update(payload);
+        return Base64.getEncoder().encodeToString(signer.sign());
+    }
+
     private static SecretKey deriveKey(String passphrase, byte[] salt) throws GeneralSecurityException {
         PBEKeySpec spec = new PBEKeySpec(passphrase.toCharArray(), salt, PBKDF2_ITERATIONS, AES_KEY_BITS);
         byte[] derived = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();

@@ -147,7 +147,7 @@ updater.onUpdateAvailable(listener: (info: UpdateInfo) => void): () => void
 updater.onProgress(listener: (p: UpdateProgress) => void): () => void
 updater.onDownloaded(listener: (info: UpdateInfo) => void): () => void
 updater.onError(listener: (e: { code: string; message: string }) => void): () => void
-updater.onManualRequired(listener: (i: { version: string; reason: string; url: string }) => void): () => void
+updater.onManualRequired(listener: (i: { version: string; reason: string; url: string | null; managed: boolean }) => void): () => void
 ```
 
 Every `on*` method returns an unsubscribe function. Rejects with `code:

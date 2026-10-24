@@ -177,7 +177,7 @@ final class PackageCommand implements Callable<Integer> {
                         + "fill in the URLs before publishing.");
             }
 
-            UpdateArtifacts.Result result = UpdateArtifacts.write(dest, name, appVersion,
+            UpdateArtifacts.Result result = UpdateArtifacts.write(dest, name, config.identifierOrDefault(), appVersion,
                     channel != null ? channel : updater.channelOrDefault(),
                     binary, installedFileName(), producedInstaller, baseUrl, notes, minVersion, rollout,
                     privateKey);
