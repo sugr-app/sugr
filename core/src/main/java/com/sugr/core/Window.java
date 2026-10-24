@@ -240,8 +240,11 @@ public final class Window {
         try {
             uiDispatcher.runOnUiThread(() -> {
                 String js = "window.__sugrEvents__.dispatch(" + Json.quote(event) + "," + payloadJson + ")";
-                try {
-                    webviewEval.invoke(handle, arena.allocateFrom(js));
+                // Per-call confined arena, not the app-lifetime shared one: webview_eval copies
+                // the script into a std::string before returning, so the buffer only has to
+                // live for the call itself - see callArena().
+                try (Arena call = callArena()) {
+                    webviewEval.invoke(handle, call.allocateFrom(js));
                 } catch (Throwable t) {
                     throw new RuntimeException(t);
                 }
@@ -259,8 +262,8 @@ public final class Window {
     public void reload() {
         try {
             uiDispatcher.runOnUiThread(() -> {
-                try {
-                    webviewNavigate.invoke(handle, arena.allocateFrom(targetUrl));
+                try (Arena call = callArena()) {
+                    webviewNavigate.invoke(handle, call.allocateFrom(targetUrl));
                 } catch (Throwable t) {
                     throw new RuntimeException(t);
                 }
@@ -721,31 +724,35 @@ public final class Window {
         }
         uiDispatcher = new UiDispatcher(webview, handle);
 
-        webviewSetTitle.invoke(handle, arena.allocateFrom(title));
-        applyChrome();
-        webviewInit.invoke(handle, arena.allocateFrom(EVENTS_BOOTSTRAP_JS));
-        if (splashScreen) {
-            webviewInit.invoke(handle, arena.allocateFrom(buildSplashScript()));
-        }
-
-        MemorySegment invokeStub = webview.upcall(MethodHandles.lookup(), this, "onInvoke",
-                MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
-                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-        webviewBind.invoke(handle, arena.allocateFrom("invoke"), invokeStub, MemorySegment.NULL);
-
-        MemorySegment emitStub = webview.upcall(MethodHandles.lookup(), this, "onEmitFromJs",
-                MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
-                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-        webviewBind.invoke(handle, arena.allocateFrom("emit"), emitStub, MemorySegment.NULL);
-
-        targetUrl = switch (frontend) {
-            case Frontend.DevServer dev -> dev.url();
-            case Frontend.Embedded embedded -> {
-                assetServer = new AssetServer(embedded.resourceRoot());
-                yield assetServer.baseUrl();
+        // The strings handed to webview during setup are copied by libwebview before each
+        // call returns, so they only need to live for this block - not for the whole app.
+        try (Arena setup = callArena()) {
+            webviewSetTitle.invoke(handle, setup.allocateFrom(title));
+            applyChrome();
+            webviewInit.invoke(handle, setup.allocateFrom(EVENTS_BOOTSTRAP_JS));
+            if (splashScreen) {
+                webviewInit.invoke(handle, setup.allocateFrom(buildSplashScript()));
             }
-        };
-        webviewNavigate.invoke(handle, arena.allocateFrom(targetUrl));
+
+            MemorySegment invokeStub = webview.upcall(MethodHandles.lookup(), this, "onInvoke",
+                    MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
+                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            webviewBind.invoke(handle, setup.allocateFrom("invoke"), invokeStub, MemorySegment.NULL);
+
+            MemorySegment emitStub = webview.upcall(MethodHandles.lookup(), this, "onEmitFromJs",
+                    MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
+                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            webviewBind.invoke(handle, setup.allocateFrom("emit"), emitStub, MemorySegment.NULL);
+
+            targetUrl = switch (frontend) {
+                case Frontend.DevServer dev -> dev.url();
+                case Frontend.Embedded embedded -> {
+                    assetServer = new AssetServer(embedded.resourceRoot());
+                    yield assetServer.baseUrl();
+                }
+            };
+            webviewNavigate.invoke(handle, setup.allocateFrom(targetUrl));
+        }
 
         restoreSavedWindowState();
         scheduleReveal();
@@ -965,33 +972,45 @@ public final class Window {
     private static final String READY_PING_METHOD = "__sugrReady";
 
     private void onInvoke(MemorySegment seq, MemorySegment req, MemorySegment unusedArg) {
-        String seqStr = seq.reinterpret(1 << 20).getString(0);
-        String reqJson = req.reinterpret(1 << 20).getString(0);
+        // Nothing may escape this method: it's an FFM upcall, and an exception thrown out of
+        // one terminates the JVM. Every request is page-controlled (window.invoke(123) is one
+        // console line away), so failures are turned into a JS-side rejection instead.
+        String seqStr = null;
+        try {
+            seqStr = seq.reinterpret(1 << 20).getString(0);
+            String reqJson = req.reinterpret(1 << 20).getString(0);
+            handleInvoke(seqStr, reqJson);
+        } catch (Throwable t) {
+            System.err.println("[sugr] invoke failed:");
+            t.printStackTrace();
+            if (seqStr != null) {
+                replyError(seqStr, t);
+            }
+        }
+    }
 
-        List<String> peekedArgs = Json.parseStringArray(reqJson);
-        if (!peekedArgs.isEmpty() && READY_PING_METHOD.equals(peekedArgs.get(0))) {
-            markWebviewReady();
-            reply(seqStr, "null", false);
+    private void handleInvoke(String seq, String reqJson) {
+        Bridge.Request request;
+        try {
+            request = Bridge.parseRequest(reqJson);
+        } catch (BridgeException e) {
+            replyError(seq, e);
             return;
         }
 
-        bridge.dispatch(reqJson).whenComplete((resultJson, error) -> {
+        if (READY_PING_METHOD.equals(request.method())) {
+            markWebviewReady();
+            reply(seq, "null", false);
+            return;
+        }
+
+        bridge.dispatch(request.method(), request.paramsJson()).whenComplete((resultJson, error) -> {
             try {
-                String finalResult;
-                boolean isError;
                 if (error == null) {
-                    finalResult = resultJson;
-                    isError = false;
+                    reply(seq, resultJson, false);
                 } else {
-                    Throwable cause = error instanceof java.util.concurrent.CompletionException && error.getCause() != null
-                            ? error.getCause() : error;
-                    BridgeException bridgeError = cause instanceof BridgeException be
-                            ? be
-                            : new BridgeException(cause.getMessage() == null ? cause.toString() : cause.getMessage(), cause);
-                    finalResult = bridgeError.toJson().encode();
-                    isError = true;
+                    replyError(seq, error);
                 }
-                reply(seqStr, finalResult, isError);
             } catch (Throwable t) {
                 // whenComplete() swallows exceptions thrown here - log so async failures are visible.
                 System.err.println("[sugr] onInvoke whenComplete failed:");
@@ -1000,19 +1019,35 @@ public final class Window {
         });
     }
 
+    /** Rejects the JS-side promise for {@code seq} with {@code error} as a {@link BridgeException} JSON payload. */
+    private void replyError(String seq, Throwable error) {
+        Throwable cause = error instanceof java.util.concurrent.CompletionException && error.getCause() != null
+                ? error.getCause() : error;
+        BridgeException bridgeError = cause instanceof BridgeException be
+                ? be
+                : new BridgeException(cause.getMessage() == null ? cause.toString() : cause.getMessage(), cause);
+        reply(seq, bridgeError.toJson().encode(), true);
+    }
+
     /**
      * Calls webview_return via {@link UiDispatcher}, re-allocating a native buffer for
      * {@code seq} from the Java copy captured in {@link #onInvoke}. See {@code Application}'s
      * former javadoc here (unchanged behavior, just moved onto Window): the native
      * {@code seq} pointer is only valid for the duration of the synchronous invoke
      * callback, so it must be copied before any async work happens.
+     *
+     * <p>The native copies live in a per-call confined arena opened and closed inside the
+     * UI-thread task (so it's created and used on the same thread, as confinement requires).
+     * That's safe because webview_return copies {@code seq}/{@code result} into
+     * {@code std::string}s before returning - the actual resolve is queued with its own
+     * copies - and it stops every reply from leaking into the app-lifetime shared arena.
      */
     private void reply(String seq, String resultJson, boolean isError) {
         try {
             uiDispatcher.runOnUiThread(() -> {
-                try {
-                    MemorySegment seqNative = arena.allocateFrom(seq);
-                    MemorySegment resultNative = arena.allocateFrom(resultJson);
+                try (Arena call = callArena()) {
+                    MemorySegment seqNative = call.allocateFrom(seq);
+                    MemorySegment resultNative = call.allocateFrom(resultJson == null ? "null" : resultJson);
                     webviewReturn.invoke(handle, seqNative, isError ? 1 : 0, resultNative);
                 } catch (Throwable t) {
                     System.err.println("[sugr] webview_return failed:");
@@ -1025,20 +1060,43 @@ public final class Window {
         }
     }
 
-    /** Upcall target for the "emit" binding; JS -> Java events, routed to {@link EventBus}. */
+    /**
+     * Upcall target for the "emit" binding; JS -> Java events, routed to {@link EventBus}.
+     * Like {@link #onInvoke}, nothing may escape it: a malformed emit or a failing
+     * listener is logged, and the JS-side promise still settles.
+     */
     private void onEmitFromJs(MemorySegment seq, MemorySegment req, MemorySegment unusedArg) {
-        String reqJson = req.reinterpret(1 << 20).getString(0);
+        boolean failed = false;
         try {
-            List<String> args = Json.parseStringArray(reqJson);
-            if (!args.isEmpty() && args.get(0) != null) {
-                String event = args.get(0);
-                String payload = args.size() > 1 && args.get(1) != null ? args.get(1) : "null";
-                eventBus.dispatch(event, payload);
-            }
-            webviewReturn.invoke(handle, seq, 0, arena.allocateFrom("null"));
+            String reqJson = req.reinterpret(1 << 20).getString(0);
+            Bridge.Request request = Bridge.parseRequest(reqJson);
+            // Same [name, payloadJson] envelope as invoke(), so the same validation applies.
+            String payload = request.paramsJson() != null ? request.paramsJson() : "null";
+            eventBus.dispatch(request.method(), payload);
         } catch (Throwable t) {
-            throw new RuntimeException(t);
+            failed = true;
+            System.err.println("[sugr] emit from JS failed:");
+            t.printStackTrace();
         }
+        // Still on the upcall's own thread (the UI thread), so the native seq pointer is valid
+        // and a confined arena is fine here.
+        try (Arena call = callArena()) {
+            webviewReturn.invoke(handle, seq, failed ? 1 : 0, call.allocateFrom("null"));
+        } catch (Throwable t) {
+            System.err.println("[sugr] webview_return failed for emit:");
+            t.printStackTrace();
+        }
+    }
+
+    /**
+     * A short-lived arena for the native copy of one string handed to a webview call
+     * (webview_eval/webview_return/webview_navigate all copy their arguments before
+     * returning). Confined, so it must be opened and closed on the same thread - always
+     * the UI thread here. The app-lifetime {@link #arena} is only for allocations that
+     * have to outlive the call (e.g. upcall stubs).
+     */
+    private static Arena callArena() {
+        return Arena.ofConfined();
     }
 
     public static final class Builder {
