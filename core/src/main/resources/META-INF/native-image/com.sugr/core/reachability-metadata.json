@@ -1,27 +1,6 @@
 {
   "reflection": [
     {
-      "type": "com.sugr.core.Application",
-      "methods": [
-        {
-          "name": "onEmitFromJs",
-          "parameterTypes": [
-            "java.lang.foreign.MemorySegment",
-            "java.lang.foreign.MemorySegment",
-            "java.lang.foreign.MemorySegment"
-          ]
-        },
-        {
-          "name": "onInvoke",
-          "parameterTypes": [
-            "java.lang.foreign.MemorySegment",
-            "java.lang.foreign.MemorySegment",
-            "java.lang.foreign.MemorySegment"
-          ]
-        }
-      ]
-    },
-    {
       "type": "com.sugr.core.Window",
       "methods": [
         {
@@ -239,6 +218,13 @@
           "jint",
           "void*"
         ]
+      }
+    ]
+  },
+  "resources": {
+    "includes": [
+      {
+        "glob": "native/webview.dll"
       }
     ]
   }
