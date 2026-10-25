@@ -145,6 +145,24 @@ reg add "HKLM\Software\Policies\com.example.app" /v DisableUpdates /t REG_DWORD 
 The registry is read once at startup, only for a packaged app that has an
 `updater` block.
 
+### Proxies
+
+Update checks and downloads go through the machine's proxy, resolved in
+this order:
+
+1. JVM system properties `https.proxyHost` / `http.proxyHost`, if set;
+2. the `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables
+   (either case; `NO_PROXY` matches a domain and its subdomains, `*` matches
+   everything);
+3. on Windows, the user's Internet Settings - `ProxyEnable`, `ProxyServer`
+   (`host:port` or `http=h:p;https=h2:p2`) and `ProxyOverride` (globs plus
+   `<local>`) under
+   `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`;
+4. otherwise a direct connection.
+
+PAC/WPAD auto-config scripts and proxies that require authentication aren't
+supported yet. Loopback hosts always bypass the proxy.
+
 macOS and Linux follow the same shape (`.app` bundle swap on macOS, binary
 swap for a portable Linux install) but - like the rest of `sugr`'s non-Windows
 packaging - are unverified so far; see `PackageCommand`'s javadoc for the
