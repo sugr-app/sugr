@@ -72,6 +72,7 @@ public final class Application {
      * not a packaged binary, or switched off via {@code SUGR_DISABLE_UPDATER} or
      * the {@code DisableUpdates} Windows policy.
      */
+    @com.sugr.bridge.Experimental
     public Updater updater() {
         return Updater.shared();
     }
@@ -85,6 +86,7 @@ public final class Application {
      * child in any meaningful sense - it inherits no handles and outlives us -
      * so the two never contend for the window or the webview runtime.
      */
+    @com.sugr.bridge.Experimental
     public void relaunch() {
         Relauncher.relaunch();
     }

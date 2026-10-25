@@ -1,5 +1,6 @@
 package com.sugr.core;
 
+import com.sugr.bridge.Experimental;
 import com.sugr.bridge.Json;
 
 import java.io.IOException;
@@ -33,8 +34,12 @@ import java.util.concurrent.Executors;
  * from starting: every failure path ends in an {@code sugr://update-error}
  * event and a log line.
  *
+ * <p>Experimental: the API shape (and the manifest format behind it) may
+ * change in the next minor version.
+ *
  * @see <a href="file:../../../../../../docs/guide/updates.md">docs/guide/updates.md</a>
  */
+@Experimental
 public final class Updater {
 
     /** Set to {@code 1} to switch updates off entirely - for managed/enterprise deployments. */
@@ -67,6 +72,7 @@ public final class Updater {
     static final String MANAGED_REASON = "Managed install - updates are delivered by your administrator";
 
     /** A release newer than what's running. */
+    @Experimental
     public record UpdateInfo(String version, String currentVersion, String notes, String pubDate, long size) {
 
         Json toJson() {
@@ -81,6 +87,7 @@ public final class Updater {
     }
 
     /** Download progress. {@code total} is -1 and {@code percent} 0 when the size isn't known. */
+    @Experimental
     public record Progress(long downloaded, long total, double percent) {
 
         static Progress of(long downloaded, long total) {
