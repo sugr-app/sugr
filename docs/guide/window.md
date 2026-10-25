@@ -205,3 +205,28 @@ different one.
 Still works (it's exactly what `Frontend.auto()` does internally), but
 prefer `Frontend.auto()` in new code.
 :::
+
+### Allowed origins
+
+Bridge calls (`invoke`/`emit`) are only accepted from the window's own
+frontend origin - the embedded server's `http://127.0.0.1:<port>`, or the
+dev server URL's origin. If the page legitimately navigates somewhere else
+that still needs the bridge, allow that origin explicitly:
+
+```java
+Application.builder()
+    .frontend(Frontend.auto())
+    .allowOrigin("https://app.example.com")
+    .run();
+```
+
+Calls from any other origin are rejected with a `FORBIDDEN` `BridgeError`
+(and logged on the Java side).
+
+::: warning Defense-in-depth, not a security boundary
+The origin is reported by the page itself, so script running in the window
+could spoof it. It guards against the accidental case (a followed link or
+redirect landing on a foreign site that then finds `window.invoke`); blocking
+navigation away from the app and a Content-Security-Policy are planned as the
+real boundary.
+:::
