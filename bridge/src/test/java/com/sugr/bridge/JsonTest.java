@@ -92,4 +92,93 @@ final class JsonTest {
     void parseStringArrayHandlesEmptyArray() {
         assertTrue(Json.parseStringArray("[]").isEmpty());
     }
+
+    @Test
+    void parseRejectsTrailingGarbageWithJsonException() {
+        assertThrows(JsonException.class, () -> Json.parse("{\"a\":1}x"));
+        assertThrows(JsonException.class, () -> Json.parse("[1]]"));
+        assertThrows(JsonException.class, () -> Json.parse("\"a\" \"b\""));
+    }
+
+    @Test
+    void parseRejectsUnterminatedStrings() {
+        assertThrows(JsonException.class, () -> Json.parse("\"abc"));
+        assertThrows(JsonException.class, () -> Json.parse("\"abc\\"));
+        assertThrows(JsonException.class, () -> Json.parse("[\"abc"));
+        assertThrows(JsonException.class, () -> Json.parse("{\"key"));
+    }
+
+    @Test
+    void parseRejectsBadUnicodeEscapes() {
+        assertThrows(JsonException.class, () -> Json.parse("\"\\u12\""));
+        assertThrows(JsonException.class, () -> Json.parse("\"\\u12"));
+        assertThrows(JsonException.class, () -> Json.parse("\"\\uzzzz\""));
+    }
+
+    @Test
+    void parseRejectsUnknownEscapesAndRawControlCharacters() {
+        assertThrows(JsonException.class, () -> Json.parse("\"\\q\""));
+        assertThrows(JsonException.class, () -> Json.parse("\"a\nb\""));
+    }
+
+    @Test
+    void parseRejectsMalformedNumbers() {
+        for (String bad : List.of("-", "1.", ".5", "1e", "1e+", "01", "--1", "1.2.3", "+1", "0x10", "NaN", "Infinity")) {
+            assertThrows(JsonException.class, () -> Json.parse(bad), bad);
+        }
+    }
+
+    @Test
+    void parseAcceptsEveryValidNumberForm() {
+        assertEquals(0.0, Json.parse("0").asNumber());
+        assertEquals(-0.5, Json.parse("-0.5").asNumber());
+        assertEquals(1500.0, Json.parse("1.5e3").asNumber());
+        assertEquals(1500.0, Json.parse("1.5E+3").asNumber());
+        assertEquals(0.015, Json.parse("1.5e-2").asNumber());
+    }
+
+    @Test
+    void parseRejectsTruncatedContainers() {
+        for (String bad : List.of("", "   ", "[", "[1,", "[1 2]", "{", "{\"a\"", "{\"a\":", "{\"a\":1,", "{a:1}", "tru", "nul")) {
+            assertThrows(JsonException.class, () -> Json.parse(bad), bad);
+        }
+    }
+
+    @Test
+    void parseRejectsNestingBeyondTheDefaultLimitInsteadOfOverflowingTheStack() {
+        String deep = "[".repeat(10_000) + "]".repeat(10_000);
+        JsonException e = assertThrows(JsonException.class, () -> Json.parse(deep));
+        assertTrue(e.getMessage().contains("nested"), e.getMessage());
+
+        String deepObjects = "{\"a\":".repeat(10_000) + "1" + "}".repeat(10_000);
+        assertThrows(JsonException.class, () -> Json.parse(deepObjects));
+    }
+
+    @Test
+    void parseAllowsNestingUpToTheLimit() {
+        int limit = Json.DEFAULT_MAX_DEPTH;
+        String atLimit = "[".repeat(limit) + "]".repeat(limit);
+        assertTrue(Json.parse(atLimit) instanceof Json.Arr);
+        String overLimit = "[".repeat(limit + 1) + "]".repeat(limit + 1);
+        assertThrows(JsonException.class, () -> Json.parse(overLimit));
+    }
+
+    @Test
+    void parseHonorsACustomDepthLimit() {
+        assertThrows(JsonException.class, () -> Json.parse("[[1]]", 1));
+        assertEquals(1, Json.parse("[1]", 1).asArray().size());
+    }
+
+    @Test
+    void parseRejectsNull() {
+        assertThrows(JsonException.class, () -> Json.parse(null));
+    }
+
+    @Test
+    void parseStringArrayRejectsNonArraysAndNonStringItems() {
+        assertThrows(JsonException.class, () -> Json.parseStringArray("123"));
+        assertThrows(JsonException.class, () -> Json.parseStringArray("{}"));
+        assertThrows(JsonException.class, () -> Json.parseStringArray("[123]"));
+        assertThrows(JsonException.class, () -> Json.parseStringArray("[\"x\", {}]"));
+    }
 }

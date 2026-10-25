@@ -212,6 +212,12 @@ public final class Application {
             return this;
         }
 
+        /** See {@link Window.Builder#devTools}. */
+        public Builder devTools(boolean devTools) {
+            windowBuilder.devTools(devTools);
+            return this;
+        }
+
         /** See {@link Window.Builder#restoreWindowState}. */
         public Builder restoreWindowState(boolean restore) {
             windowBuilder.restoreWindowState(restore);
@@ -233,6 +239,12 @@ public final class Application {
         /** See {@link Window.Builder#customTitleBar}. */
         public Builder customTitleBar() {
             windowBuilder.customTitleBar();
+            return this;
+        }
+
+        /** See {@link Window.Builder#allowOrigin}. */
+        public Builder allowOrigin(String... origins) {
+            windowBuilder.allowOrigin(origins);
             return this;
         }
 

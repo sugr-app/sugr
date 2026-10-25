@@ -42,11 +42,21 @@ final class UiDispatcher {
         webviewDispatch.invoke(webviewHandle, trampoline, MemorySegment.NULL);
     }
 
-    /** Upcall target for webview_dispatch; runs on the UI thread, drains queued work. */
+    /**
+     * Upcall target for webview_dispatch; runs on the UI thread, drains queued work.
+     * Each task is isolated: an exception escaping an FFM upcall kills the JVM, and
+     * one failing task shouldn't strand the ones queued behind it either - so a
+     * failure is logged and the drain carries on.
+     */
     private void onDispatch(MemorySegment handleArg, MemorySegment argArg) {
         Runnable task;
         while ((task = queue.poll()) != null) {
-            task.run();
+            try {
+                task.run();
+            } catch (Throwable t) {
+                System.err.println("[sugr] a task dispatched to the UI thread failed:");
+                t.printStackTrace();
+            }
         }
     }
 }
