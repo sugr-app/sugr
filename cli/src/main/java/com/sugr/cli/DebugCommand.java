@@ -4,6 +4,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -61,7 +62,12 @@ final class DebugCommand implements Callable<Integer> {
         boolean frontendDebug = !noFrontend;
 
         List<String> extraGradleArgs = backend ? List.of("--debug-jvm") : List.of();
-        Map<String, String> extraEnv = frontendDebug ? ProcessUtil.cdpDebugEnv(FRONTEND_PORT) : Map.of();
+        Map<String, String> extraEnv = new HashMap<>(
+                frontendDebug ? ProcessUtil.cdpDebugEnv(FRONTEND_PORT) : Map.of());
+        // DevRuntime already sets SUGR_DEV_URL (which Window.resolveDevTools treats as "dev"
+        // on its own), but force it explicitly too - `sugr debug` means devtools are wanted
+        // even if --env points at something other than "dev".
+        extraEnv.put("SUGR_DEVTOOLS", "1");
 
         if (backend) {
             System.out.println("[sugr] backend debug: JVM will suspend and wait for a debugger on port "

@@ -163,6 +163,12 @@ public final class Application {
             return this;
         }
 
+        /** See {@link Window.Builder#devTools}. */
+        public Builder devTools(boolean devTools) {
+            windowBuilder.devTools(devTools);
+            return this;
+        }
+
         /** See {@link Window.Builder#restoreWindowState}. */
         public Builder restoreWindowState(boolean restore) {
             windowBuilder.restoreWindowState(restore);
