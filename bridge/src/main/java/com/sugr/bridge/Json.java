@@ -57,12 +57,30 @@ public sealed interface Json {
         return new Obj(fields);
     }
 
+    /**
+     * Default limit for how deeply arrays/objects may nest in {@link #parse(String)}.
+     * The parser is recursive, so without a cap a hostile page could send
+     * {@code [[[[...]]]]} thousands of levels deep and blow the stack - a
+     * {@code StackOverflowError} inside an FFM upcall takes the whole JVM down.
+     * 64 is far beyond anything a real bridge payload needs.
+     */
+    int DEFAULT_MAX_DEPTH = 64;
+
+    /** Parses a single JSON value; throws {@link JsonException} on any malformed input. */
     static Json parse(String text) {
-        Parser p = new Parser(text);
+        return parse(text, DEFAULT_MAX_DEPTH);
+    }
+
+    /** Like {@link #parse(String)}, with a custom nesting limit (arrays/objects nested more than {@code maxDepth} deep are rejected). */
+    static Json parse(String text, int maxDepth) {
+        if (text == null) {
+            throw new JsonException("Cannot parse null as JSON");
+        }
+        Parser p = new Parser(text, maxDepth);
         Json value = p.parseValue();
         p.skipWs();
         if (!p.atEnd()) {
-            throw new IllegalArgumentException("Trailing content in JSON: " + text);
+            throw new JsonException("Trailing content in JSON at " + p.pos);
         }
         return value;
     }
@@ -72,12 +90,25 @@ public sealed interface Json {
         return of(s).encode();
     }
 
-    /** Parses a JSON array containing only strings (or null), e.g. ["a","b"] or []. */
+    /**
+     * Parses a JSON array containing only strings (or null), e.g. ["a","b"] or [].
+     * Throws {@link JsonException} if the text isn't valid JSON, isn't an array, or
+     * holds anything other than strings/nulls.
+     */
     static List<String> parseStringArray(String text) {
-        List<Json> items = parse(text).asArray();
-        List<String> out = new ArrayList<>(items.size());
-        for (Json item : items) {
-            out.add(item.isNull() ? null : item.asString());
+        Json parsed = parse(text);
+        if (!(parsed instanceof Arr arr)) {
+            throw new JsonException("Expected a JSON array of strings, got: " + parsed.encode());
+        }
+        List<String> out = new ArrayList<>(arr.items().size());
+        for (Json item : arr.items()) {
+            if (item.isNull()) {
+                out.add(null);
+            } else if (item instanceof Str s) {
+                out.add(s.value());
+            } else {
+                throw new JsonException("Expected only strings in the JSON array, got: " + item.encode());
+            }
         }
         return out;
     }
@@ -189,12 +220,21 @@ public sealed interface Json {
         }
     }
 
+    /**
+     * Recursive-descent parser behind {@link Json#parse}. Strict RFC 8259 JSON:
+     * every malformed input - including running off the end of the text mid-value -
+     * surfaces as a {@link JsonException} with the offending position, never as a
+     * raw {@code StringIndexOutOfBoundsException}/{@code NumberFormatException}.
+     */
     final class Parser {
         private final String text;
+        private final int maxDepth;
         private int pos;
+        private int depth;
 
-        Parser(String text) {
+        Parser(String text, int maxDepth) {
             this.text = text;
+            this.maxDepth = maxDepth;
         }
 
         boolean atEnd() {
@@ -202,17 +242,26 @@ public sealed interface Json {
         }
 
         void skipWs() {
-            while (pos < text.length() && Character.isWhitespace(text.charAt(pos))) {
+            while (pos < text.length()) {
+                char c = text.charAt(pos);
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                    break;
+                }
                 pos++;
             }
         }
 
+        /** The char at {@link #pos}, or a JsonException if the input ended early. */
+        private char peek() {
+            if (atEnd()) {
+                throw new JsonException("Unexpected end of JSON at " + pos);
+            }
+            return text.charAt(pos);
+        }
+
         Json parseValue() {
             skipWs();
-            if (atEnd()) {
-                throw new IllegalArgumentException("Unexpected end of JSON");
-            }
-            char c = text.charAt(pos);
+            char c = peek();
             return switch (c) {
                 case '"' -> parseString();
                 case '{' -> parseObject();
@@ -229,24 +278,52 @@ public sealed interface Json {
                     expect("null");
                     yield NULL;
                 }
-                default -> parseNumber();
+                default -> {
+                    if (c == '-' || isDigit(c)) {
+                        yield parseNumber();
+                    }
+                    throw new JsonException("Unexpected character '" + c + "' at " + pos);
+                }
             };
         }
 
         private void expect(String literal) {
             if (!text.startsWith(literal, pos)) {
-                throw new IllegalArgumentException("Expected " + literal + " at " + pos);
+                throw new JsonException("Expected " + literal + " at " + pos);
             }
             pos += literal.length();
         }
 
+        /** Called on every '[' / '{' - see {@link Json#DEFAULT_MAX_DEPTH} for why there's a cap. */
+        private void enterNested() {
+            if (++depth > maxDepth) {
+                throw new JsonException("JSON nested deeper than the limit of " + maxDepth + " at " + pos);
+            }
+        }
+
         private Str parseString() {
+            if (peek() != '"') {
+                throw new JsonException("Expected a string at " + pos);
+            }
+            int start = pos;
             pos++; // opening quote
             StringBuilder sb = new StringBuilder();
-            while (text.charAt(pos) != '"') {
+            while (true) {
+                if (atEnd()) {
+                    throw new JsonException("Unterminated string starting at " + start);
+                }
                 char c = text.charAt(pos);
+                if (c == '"') {
+                    break;
+                }
+                if (c < 0x20) {
+                    throw new JsonException("Unescaped control character in string at " + pos);
+                }
                 if (c == '\\') {
                     pos++;
+                    if (atEnd()) {
+                        throw new JsonException("Unterminated string starting at " + start);
+                    }
                     char esc = text.charAt(pos);
                     switch (esc) {
                         case 'n' -> sb.append('\n');
@@ -258,11 +335,10 @@ public sealed interface Json {
                         case '\\' -> sb.append('\\');
                         case '/' -> sb.append('/');
                         case 'u' -> {
-                            String hex = text.substring(pos + 1, pos + 5);
-                            sb.append((char) Integer.parseInt(hex, 16));
+                            sb.append(readUnicodeEscape());
                             pos += 4;
                         }
-                        default -> sb.append(esc);
+                        default -> throw new JsonException("Invalid escape \\" + esc + " at " + (pos - 1));
                     }
                 } else {
                     sb.append(c);
@@ -273,29 +349,81 @@ public sealed interface Json {
             return new Str(sb.toString());
         }
 
+        /** Decodes the 4 hex digits of a unicode escape (pos is on its 'u'); doesn't advance pos. */
+        private char readUnicodeEscape() {
+            if (pos + 4 >= text.length()) {
+                throw new JsonException("Truncated \\u escape at " + (pos - 1));
+            }
+            int value = 0;
+            for (int i = 1; i <= 4; i++) {
+                int digit = Character.digit(text.charAt(pos + i), 16);
+                if (digit < 0) {
+                    throw new JsonException("Invalid \\u escape at " + (pos - 1));
+                }
+                value = (value << 4) | digit;
+            }
+            return (char) value;
+        }
+
+        /** Strict JSON number grammar: {@code -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?}. */
         private Num parseNumber() {
             int start = pos;
-            if (text.charAt(pos) == '-') pos++;
-            while (pos < text.length() && (Character.isDigit(text.charAt(pos)) || text.charAt(pos) == '.'
-                    || text.charAt(pos) == 'e' || text.charAt(pos) == 'E'
-                    || text.charAt(pos) == '+' || text.charAt(pos) == '-')) {
+            if (peek() == '-') {
                 pos++;
             }
+            if (atEnd() || !isDigit(text.charAt(pos))) {
+                throw new JsonException("Malformed number at " + start);
+            }
+            if (text.charAt(pos) == '0') {
+                pos++;
+            } else {
+                skipDigits();
+            }
+            if (!atEnd() && text.charAt(pos) == '.') {
+                pos++;
+                if (atEnd() || !isDigit(text.charAt(pos))) {
+                    throw new JsonException("Malformed number at " + start);
+                }
+                skipDigits();
+            }
+            if (!atEnd() && (text.charAt(pos) == 'e' || text.charAt(pos) == 'E')) {
+                pos++;
+                if (!atEnd() && (text.charAt(pos) == '+' || text.charAt(pos) == '-')) {
+                    pos++;
+                }
+                if (atEnd() || !isDigit(text.charAt(pos))) {
+                    throw new JsonException("Malformed number at " + start);
+                }
+                skipDigits();
+            }
+            // The grammar check above guarantees parseDouble accepts this substring.
             return new Num(Double.parseDouble(text.substring(start, pos)));
         }
 
+        private static boolean isDigit(char c) {
+            return c >= '0' && c <= '9';
+        }
+
+        private void skipDigits() {
+            while (!atEnd() && isDigit(text.charAt(pos))) {
+                pos++;
+            }
+        }
+
         private Arr parseArray() {
+            enterNested();
             pos++; // [
             List<Json> items = new ArrayList<>();
             skipWs();
-            if (text.charAt(pos) == ']') {
+            if (peek() == ']') {
                 pos++;
+                depth--;
                 return new Arr(items);
             }
             while (true) {
                 items.add(parseValue());
                 skipWs();
-                char c = text.charAt(pos);
+                char c = peek();
                 if (c == ',') {
                     pos++;
                     continue;
@@ -304,31 +432,34 @@ public sealed interface Json {
                     pos++;
                     break;
                 }
-                throw new IllegalArgumentException("Expected , or ] at " + pos);
+                throw new JsonException("Expected , or ] at " + pos);
             }
+            depth--;
             return new Arr(items);
         }
 
         private Obj parseObject() {
+            enterNested();
             pos++; // {
             Map<String, Json> fields = new LinkedHashMap<>();
             skipWs();
-            if (text.charAt(pos) == '}') {
+            if (peek() == '}') {
                 pos++;
+                depth--;
                 return new Obj(fields);
             }
             while (true) {
                 skipWs();
                 Str key = parseString();
                 skipWs();
-                if (text.charAt(pos) != ':') {
-                    throw new IllegalArgumentException("Expected : at " + pos);
+                if (peek() != ':') {
+                    throw new JsonException("Expected : at " + pos);
                 }
                 pos++;
                 Json value = parseValue();
                 fields.put(key.value(), value);
                 skipWs();
-                char c = text.charAt(pos);
+                char c = peek();
                 if (c == ',') {
                     pos++;
                     continue;
@@ -337,8 +468,9 @@ public sealed interface Json {
                     pos++;
                     break;
                 }
-                throw new IllegalArgumentException("Expected , or } at " + pos);
+                throw new JsonException("Expected , or } at " + pos);
             }
+            depth--;
             return new Obj(fields);
         }
     }
