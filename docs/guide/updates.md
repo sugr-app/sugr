@@ -126,6 +126,25 @@ app in `Program Files` (Intune, SCCM, a GPO, an admin running the installer)
 owns its updates. Re-running the per-user installer from there would only
 create a second copy under `%LOCALAPPDATA%` and leave the managed one stale.
 
+### Turning updates off by policy
+
+An administrator can switch the updater off entirely - no checks, no
+network traffic, `updater.isSupported()` resolves `false` - in either of
+these ways:
+
+- the environment variable `SUGR_DISABLE_UPDATER=1`;
+- on Windows, a `REG_DWORD` value `DisableUpdates` set to `1` under
+  `HKLM\Software\Policies\<identifier>` (machine policy) or the same path
+  under `HKCU` (user policy), where `<identifier>` is the app's
+  `identifier` from `sugr.config.json`. Either one is enough:
+
+```bat
+reg add "HKLM\Software\Policies\com.example.app" /v DisableUpdates /t REG_DWORD /d 1 /f
+```
+
+The registry is read once at startup, only for a packaged app that has an
+`updater` block.
+
 macOS and Linux follow the same shape (`.app` bundle swap on macOS, binary
 swap for a portable Linux install) but - like the rest of `sugr`'s non-Windows
 packaging - are unverified so far; see `PackageCommand`'s javadoc for the

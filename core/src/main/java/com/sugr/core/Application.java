@@ -69,7 +69,8 @@ public final class Application {
     /**
      * The updater for this app, or {@code null} when updates are unavailable -
      * not configured in {@code sugr.config.json}, running under {@code sugr dev},
-     * not a packaged binary, or switched off via {@code SUGR_DISABLE_UPDATER}.
+     * not a packaged binary, or switched off via {@code SUGR_DISABLE_UPDATER} or
+     * the {@code DisableUpdates} Windows policy.
      */
     public Updater updater() {
         return Updater.shared();

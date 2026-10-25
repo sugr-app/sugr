@@ -40,6 +40,13 @@ public final class Updater {
     /** Set to {@code 1} to switch updates off entirely - for managed/enterprise deployments. */
     public static final String DISABLE_ENV = "SUGR_DISABLE_UPDATER";
 
+    /**
+     * On Windows, a {@code REG_DWORD} of {@code 1} with this name under
+     * {@code HKLM\Software\Policies\<identifier>} or the same path in
+     * {@code HKCU} also switches updates off - what Group Policy / Intune write.
+     */
+    public static final String DISABLE_POLICY_VALUE = "DisableUpdates";
+
     /** Emitted when a check finds a newer release. Payload: {@link UpdateInfo}. */
     public static final String EVENT_AVAILABLE = "sugr://update-available";
     /** Emitted repeatedly during a download. Payload: {@link Progress}. */
@@ -142,8 +149,9 @@ public final class Updater {
     /**
      * The updater for this app, or {@code null} when updates are unavailable -
      * not configured, running under {@code sugr dev}, not a packaged binary, or
-     * disabled by {@link #DISABLE_ENV}. Callers treat null as "the feature is
-     * off", which is why every reason lands in the same place.
+     * disabled by {@link #DISABLE_ENV} or the {@link #DISABLE_POLICY_VALUE}
+     * policy. Callers treat null as "the feature is off", which is why every
+     * reason lands in the same place.
      */
     static Updater shared() {
         if (!sharedResolved) {
@@ -178,7 +186,32 @@ public final class Updater {
             System.out.println("[sugr] updates are disabled - this isn't a packaged app.");
             return null;
         }
+        // Last, because it costs reg.exe round trips and every check above is free.
+        if (Os.isWindows() && disabledByPolicy(metadata.identifier())) {
+            System.out.println("[sugr] updates are disabled by policy (" + DISABLE_POLICY_VALUE + ").");
+            return null;
+        }
         return new Updater(metadata, settings);
+    }
+
+    /**
+     * Whether an administrator switched updates off for {@code identifier}.
+     * Machine policy (HKLM) and user policy (HKCU) are both honoured; either
+     * one set is enough. The two keys are read in parallel so startup pays one
+     * round trip, not two.
+     */
+    static boolean disabledByPolicy(String identifier) {
+        String key = "\\Software\\Policies\\" + identifier;
+        CompletableFuture<Map<String, WindowsRegistry.Value>> machine =
+                CompletableFuture.supplyAsync(() -> WindowsRegistry.readKey("HKLM" + key));
+        Map<String, WindowsRegistry.Value> user = WindowsRegistry.readKey("HKCU" + key);
+        return policyDisables(machine.join()) || policyDisables(user);
+    }
+
+    /** Visible for testing - the decision for one policy key's values. */
+    static boolean policyDisables(Map<String, WindowsRegistry.Value> values) {
+        WindowsRegistry.Value value = values.get(DISABLE_POLICY_VALUE.toLowerCase(java.util.Locale.ROOT));
+        return value != null && value.isEnabledDword();
     }
 
     /** The version this app is running, as embedded at package time. */
