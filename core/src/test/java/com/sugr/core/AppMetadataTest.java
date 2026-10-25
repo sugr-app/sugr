@@ -99,17 +99,25 @@ class AppMetadataTest {
     @Test
     void expandsEndpointPlaceholders() {
         String expanded = Updater.expandPlaceholders(
-                "https://x.test/{{target}}/{{os}}/{{arch}}/{{currentVersion}}",
-                SemVer.parse("1.2.3"), "windows-x86_64");
+                "https://x.test/{{target}}/{{os}}/{{arch}}/{{currentVersion}}/latest-{{channel}}.json",
+                SemVer.parse("1.2.3"), "windows-x86_64", "beta");
 
         assertEquals("https://x.test/windows-x86_64/" + UpdateManifest.currentOs() + "/"
-                + UpdateManifest.currentArch() + "/1.2.3", expanded);
+                + UpdateManifest.currentArch() + "/1.2.3/latest-beta.json", expanded);
     }
 
     @Test
     void alsoAcceptsTauriSpellingOfTheVersionPlaceholder() {
         assertEquals("https://x.test/1.2.3",
                 Updater.expandPlaceholders("https://x.test/{{current_version}}",
-                        SemVer.parse("1.2.3"), "windows-x86_64"));
+                        SemVer.parse("1.2.3"), "windows-x86_64", "stable"));
+    }
+
+    @Test
+    void allowInsecureIsIgnoredInPackagedBuilds() {
+        assertTrue(Updater.effectiveAllowInsecure(true, AppInstall.Layout.UNPACKAGED));
+        assertFalse(Updater.effectiveAllowInsecure(true, AppInstall.Layout.EXECUTABLE));
+        assertFalse(Updater.effectiveAllowInsecure(true, AppInstall.Layout.APP_BUNDLE));
+        assertFalse(Updater.effectiveAllowInsecure(false, AppInstall.Layout.UNPACKAGED));
     }
 }

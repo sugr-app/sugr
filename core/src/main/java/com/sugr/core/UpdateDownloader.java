@@ -225,7 +225,8 @@ final class UpdateDownloader {
      * their own manifest; the signature check would still stop them installing
      * anything, but it also lets them pin a user to an old, vulnerable release
      * forever, so the transport is required to be encrypted regardless.
-     * {@code allowInsecure} exists for testing against a local server.
+     * {@code allowInsecure} exists for testing against a local server, and is
+     * forced off in packaged builds (see {@link Updater#effectiveAllowInsecure}).
      */
     private void requireSecure(URI uri) throws IOException {
         String scheme = uri.getScheme();
@@ -239,7 +240,7 @@ final class UpdateDownloader {
             return;
         }
         throw new IOException("Update URLs must use https (got " + scheme + "://). "
-                + "Set \"allowInsecure\": true under \"updater\" in sugr.config.json for local testing.");
+                + "\"allowInsecure\" under \"updater\" allows http:// only in unpackaged test runs.");
     }
 
     private static String userAgent() {
