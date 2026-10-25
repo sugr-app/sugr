@@ -16,10 +16,12 @@ To run the docs locally while contributing: `pnpm --filter sugr-docs dev`.
 
 Native OS integration beyond the bridge itself: dialogs, clipboard,
 notifications, multi-window + window events, system tray, native menus,
-global keyboard shortcuts, and launch-at-login autostart - see
+global keyboard shortcuts, launch-at-login autostart, and signed in-app
+auto-updates - see
 [Native dialogs, clipboard, notifications & autostart](docs/guide/native.md),
-[Window & frontend](docs/guide/window.md), and
-[Global shortcuts](docs/guide/shortcuts.md).
+[Window & frontend](docs/guide/window.md),
+[Global shortcuts](docs/guide/shortcuts.md), and
+[Auto-updates](docs/guide/updates.md).
 
 The `sugr` CLI itself is installable today as a prebuilt binary via
 [GitHub Releases](#cli) - `core`/`bridge`/`processor` (Maven Central) and
@@ -156,7 +158,8 @@ binary above) supports:
 | `sugr dev` | Runs the Vite dev server and the Java app together - Vite gives the frontend HMR, and `sugr dev` itself watches `lib/src/**/*.java` and rebuilds+restarts the app on change. Auto-detects the right Gradle task/root by walking up to the nearest settings.gradle.kts |
 | `sugr debug` | Like `dev`, but with backend (JDWP) and/or frontend (CDP) debugging enabled - attach a real IDE debugger to either side |
 | `sugr build` | Builds the frontend, embeds it into resources, then runs the Gradle build (JVM-based, not native-image) |
-| `sugr package` | Builds a native-image binary and wraps it into an OS installer - NSIS (`.exe`) on Windows, tested end to end; `.dmg`/`.deb` on macOS/Linux follow the same shape but are unverified so far |
+| `sugr package` | Builds a native-image binary and wraps it into an OS installer - NSIS (`.exe`) on Windows, tested end to end; `.dmg`/`.deb` on macOS/Linux follow the same shape but are unverified so far. Also builds a signed auto-update artifact + manifest when `sugr.config.json` has an `updater` block - see [Auto-updates](docs/guide/updates.md) |
+| `sugr keygen` | Generates the Ed25519 keypair `sugr package` signs update artifacts with - see [Auto-updates](docs/guide/updates.md) |
 
 `dev`/`build` auto-detection covers the common case (run them from the app's
 directory); pass `--task`/`--gradle-dir` explicitly if it guesses wrong.

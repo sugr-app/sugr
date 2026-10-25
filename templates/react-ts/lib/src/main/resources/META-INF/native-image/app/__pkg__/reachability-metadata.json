@@ -1,6 +1,7 @@
 {
   "resources": [
     { "glob": "frontend/**" },
+    { "glob": "sugr/**" },
     { "glob": "native/*.dll" },
     { "glob": "native/*.so" },
     { "glob": "native/*.dylib" },

@@ -3,6 +3,7 @@ package com.sugr.cli;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -34,6 +35,13 @@ final class DevCommand implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        // The Java module dir is javaSrcDir's parent ("lib/src" -> "lib"). Writing
+        // the metadata here too means a `sugr dev` app reports the same version as
+        // a packaged one, so update logic is testable without packaging first.
+        Path javaSrc = Path.of(javaSrcDir).toAbsolutePath().normalize();
+        if (javaSrc.getParent() != null) {
+            SugrConfig.emitAppMetadata(Path.of(".").toAbsolutePath().normalize(), javaSrc.getParent(), null, null);
+        }
         GradleProjectLocator.Result located = GradleProjectLocator.resolve(gradleTask, gradleDir, "run");
         return new DevRuntime(frontendDir, javaSrcDir, located, List.of(), Map.of(), env).run();
     }

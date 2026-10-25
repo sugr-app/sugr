@@ -37,6 +37,10 @@ final class BuildCommand implements Callable<Integer> {
     @Option(names = {"-e", "--env"}, description = "Environment (dev, staging, prod)", defaultValue = "prod")
     String env;
 
+    @Option(names = {"-l", "--lib-dir"}, description = "Path to the Java module dir (containing build.gradle.kts)",
+            defaultValue = "lib")
+    String libDir;
+
     @Override
     public Integer call() throws Exception {
         Path frontend = Path.of(frontendDir).toAbsolutePath().normalize();
@@ -63,6 +67,9 @@ final class BuildCommand implements Callable<Integer> {
         FileTrees.deleteRecursively(resources);
         Files.createDirectories(resources);
         FileTrees.copyRecursively(dist, resources, s -> s);
+
+        SugrConfig.emitAppMetadata(Path.of(".").toAbsolutePath().normalize(),
+                Path.of(libDir).toAbsolutePath().normalize(), null, null);
 
         GradleProjectLocator.Result located = GradleProjectLocator.resolve(gradleTask, gradleDir, "build");
         System.out.println("[sugr] running gradle " + located.task() + " (from " + located.gradleDir() + ") ...");

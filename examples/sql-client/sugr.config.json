@@ -1,4 +1,5 @@
 {
   "name": "sql-client",
-  "appVersion": "1.0.3"
+  "appVersion": "0.0.1",
+  "identifier": "sugr.examples.sqlclient"
 }
