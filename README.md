@@ -1,25 +1,18 @@
 # Sugr
 
-> Sugar for your cup of Java — build lightweight desktop apps with Java and web technologies.
+> A modern UI for Java desktop apps, built with web technologies.
 
-Sugr is a desktop app framework that pairs a Java backend with a React (or any web) frontend rendered in the OS-native webview, and ships as a single ~20–30MB binary via GraalVM native-image.
+sugr is the modern-UI base for Java desktop apps that would otherwise be built with Swing. Keep your Java backend, libraries and team; build the UI with React (or any web stack) rendered in the OS-native webview; ship a native binary and installer. Windows is supported today; macOS and Linux are planned.
+
+📖 **Docs: https://sugr-app.github.io/sugr/**
+
+To run the docs locally while contributing: `pnpm --filter sugr-docs dev`.
 
 ## Status
 
-🚧 **v0.1 done, v0.2-v0.4 done, working past them** (see [plan.md](plan.md)
-for the full phased roadmap). `core`, `bridge`, `processor`, `cli`, and
-`@sugr/runtime` exist as a Gradle + pnpm monorepo.
-[`examples/sql-client`](examples/sql-client) runs entirely on the public
-API: most methods are exposed with a single `@Bind` annotation (no
-hand-written JSON), one method stays hand-written to show it composes with
-generated bindings, `@Emits` pushes Java→JS events from native menu/shortcut
-actions, and the two-way event bus works end to end.
-`sugr init/dev/debug/build/package/doctor` automate the day-to-day workflow
-(see [CLI](#cli) below and [`docs/`](docs)) - `sugr package` builds a
-native-image binary and wraps it into a real OS installer (NSIS on Windows,
-tested end to end; macOS/Linux follow the same shape but are unverified so
-far). Per-environment config (`dev`/`staging`/`prod`, both backend and
-frontend) is wired through `--env` on `dev`/`debug`/`build`/`package`.
+**v0.1.0 released; v0.2 in progress.** The phased roadmap is in [plan.md](plan.md), kept as project history.
+[`examples/sql-client`](examples/sql-client) runs entirely on the public API: most methods are exposed with a single `@Bind` annotation (no hand-written JSON), one method stays hand-written to show it composes with generated bindings, `@Emits` pushes Java→JS events from native menu/shortcut actions, and the two-way event bus works end to end.
+`sugr init/dev/debug/build/package/doctor` automate the day-to-day workflow (see [CLI](#cli) below). `sugr package` builds a native-image binary and wraps it into an NSIS installer on Windows, tested end to end.
 
 Native OS integration beyond the bridge itself: dialogs, clipboard,
 notifications, multi-window + window events, system tray, native menus,
@@ -36,15 +29,21 @@ The `sugr` CLI itself is installable today as a prebuilt binary via
 scaffold an app *inside this checkout* for now (planned for later, see
 plan.md).
 
-📖 Full docs: run `pnpm --filter sugr-docs dev` and open the printed
-localhost URL (no hosted docs site yet).
-
 ## Why
 
-- **Small binaries.** Native-image + system webview keep the final app compact
-  (the sql-client example native binary is ~18MB).
-- **Familiar stack.** Java backend, React (or your framework of choice) frontend.
-- **Native feel.** Uses the OS's built-in webview (WebView2 / WKWebView / WebKitGTK).
+- **Keep your Java.** Reuse your existing services, JDBC code and libraries. The `@Bind` bridge exposes them to the frontend.
+- **Familiar UI stack.** Build the frontend with React or the web framework of your choice.
+- **Ships like a native app.** GraalVM native-image produces a compact binary (the sql-client example native binary is ~18MB), so users don't need a JVM.
+
+## Platform support
+
+| Platform | Status | Webview |
+|---|---|---|
+| Windows 10/11 (x64) | Supported | WebView2 |
+| macOS | Planned | WKWebView |
+| Linux | Planned | WebKitGTK |
+
+The app uses the OS's built-in webview, so no Chromium is bundled. Today that is WebView2 on Windows; WKWebView (macOS) and WebKitGTK (Linux) are planned.
 
 ## Usage (current API)
 
@@ -79,9 +78,8 @@ const orders = await Backend.ordersFor(user.id)   // CompletableFuture<T> -> Pro
 
 Supported types (nested where it makes sense): `String`, `int`/`long`/`double`/`boolean`,
 records, `List<T>`, `Map<String,T>`, and `CompletableFuture<T>` as a return type marks
-the binding async. See [`processor`](processor) for how types are matched to codegen,
-and [`examples/sql-client`](examples/sql-client)'s `SqlBridge.java` for a real example,
-including completing a `CompletableFuture` from a background thread.
+the binding async. See [`processor`](processor) for how types are matched to codegen.
+For a real example, see [`SqlService.java`](examples/sql-client/lib/src/main/java/com/sugr/examples/sqlclient/SqlService.java) in the sql-client example: its `@Bind` methods are dispatched by the generated `SqlServiceBridge`, including one that completes a `CompletableFuture` from a background thread.
 
 You can still bind by hand when you need a side effect codegen doesn't know about
 (e.g. emitting an event alongside the response) - both styles compose freely:
@@ -91,10 +89,10 @@ AtomicReference<Application> appRef = new AtomicReference<>();
 
 Application.builder()
     .bind("getUser", params -> {
-        List<String> args = MiniJson.parseStringArray(params);
-        return MiniJson.quote(myService.getUser(args.get(0)));
+        List<String> args = Json.parseStringArray(params);
+        return Json.quote(myService.getUser(args.get(0)));
     })
-    .on("ping", payload -> appRef.get().emit("pong", MiniJson.quote("hi from Java")))
+    .on("ping", payload -> appRef.get().emit("pong", Json.quote("hi from Java")))
     .onReady(appRef::set)   // stash the Application handle so bind()/on() callbacks can call emit()
     .run();
 ```
@@ -113,7 +111,8 @@ side (see [`bridge`](bridge)) - adding a new bound method never touches the
 FFM/webview layer in `core`. Events are a separate, fire-and-forget channel
 (`Application.emit()` / `.on()` in Java, `events.emit()` / `events.on()` in
 JS) - `emit()` is safe to call from any thread, it always hops onto the UI
-thread via `webview_dispatch` first. JSON is hand-rolled (`bridge.Json`) - no
+thread via `webview_dispatch` first. JSON is hand-rolled (`com.sugr.bridge.Json`, with
+`Json.parseStringArray` and `Json.quote` for hand-written binds) - no
 Jackson databind, per plan.md.
 
 See [`examples/sql-client`](examples/sql-client) for a full working app:
@@ -164,10 +163,12 @@ binary above) supports:
 
 `dev`/`build` auto-detection covers the common case (run them from the app's
 directory); pass `--task`/`--gradle-dir` explicitly if it guesses wrong.
-`dev`/`debug`/`build`/`package` all accept `--env <name>` to pick which
+`dev`/`debug`/`build` accept `--env <name>` to pick which
 `.env.<name>` (frontend) and `application-<name>.properties` (backend) to
-build against - defaults to `dev` for `dev`/`debug`, `prod` for `build`/
-`package` (see [Environments](docs/guide/environments.md)).
+build against - defaults to `dev` for `dev`/`debug`, `prod` for `build`
+(see [Environments](docs/guide/environments.md)). `sugr package` has no
+`--env`: it packages whatever frontend is already in `lib/src/main/resources/frontend`,
+so run `sugr build --env <name>` first.
 `sugr init` is scoped to scaffolding *inside* this checkout for now - since
 nothing is published, a scaffolded app can only depend on `core`/`bridge` as
 sibling Gradle projects in the same build. On Windows, `sugr package` locates
@@ -183,7 +184,7 @@ See [plan.md](plan.md) for the detailed, phased roadmap (foundations → PoC app
 
 ## Sponsor
 
-If Sugr is useful to you or your company, please consider sponsoring the project: https://github.com/sugr-app/sugr
+If sugr is useful to you or your company, please consider sponsoring the project: https://github.com/sugr-app/sugr
 
 ## License
 

@@ -160,6 +160,7 @@ throw new BridgeException("NOT_FOUND", "No such record", Json.of(recordId));
 It crosses the wire as `{"code": ..., "message": ..., "data": ...}` (`data`
 omitted when null) - JS gets this shape on `.catch()`, typed as
 `BridgeError` from `@sugr/runtime`. `Bridge`'s own built-in failures use
-`"BAD_REQUEST"` (malformed `invoke()` call) and `"METHOD_NOT_FOUND"` (no
-handler for that method); anything else that throws inside a handler and
+`"BAD_REQUEST"` (malformed `invoke()` call), `"METHOD_NOT_FOUND"` (no
+handler for that method), and `"FORBIDDEN"` (the call came from a page origin
+the window doesn't allow - see `allowOrigin(...)`); anything else that throws inside a handler and
 isn't already a `BridgeException` gets wrapped with code `"INTERNAL_ERROR"`.

@@ -14,6 +14,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
@@ -45,8 +46,29 @@ public final class Window {
      * still visibly jittered into place after being revealed. Polling the real layout
      * size directly ties "ready" to the exact condition the user can actually see, so
      * there's nothing left to guess about.
+     *
+     * <p>It also defines {@code window.invoke}/{@code window.emit} itself, as thin wrappers
+     * over the raw webview bindings ({@link #RAW_INVOKE_BINDING}/{@link #RAW_EMIT_BINDING})
+     * that append the page's {@code location.origin} as a third argument, so Java can check
+     * it against {@link OriginPolicy}. The JS-facing signature is unchanged -
+     * {@code invoke(method, paramsJson)} / {@code emit(event, payloadJson)}, which is all
+     * {@code @sugr/runtime} uses. The raw binding is looked up on every call rather than
+     * captured, because libwebview's own binding script is injected after this one.
      */
     private static final String EVENTS_BOOTSTRAP_JS = """
+            (function () {
+                function forward(rawName) {
+                    return function (name, json) {
+                        var raw = window[rawName];
+                        if (typeof raw !== 'function') {
+                            return Promise.reject({ code: 'NOT_READY', message: 'The sugr bridge is not ready yet' });
+                        }
+                        return raw(name, json === undefined ? null : json, window.location.origin);
+                    };
+                }
+                window.invoke = forward('__sugrInvoke');
+                window.emit = forward('__sugrEmit');
+            })();
             window.__sugrEvents__ = (function () {
                 const listeners = {};
                 return {
@@ -60,7 +82,7 @@ public final class Window {
             })();
             (function () {
                 function ping() {
-                    if (typeof window.invoke === 'function') {
+                    if (typeof window.__sugrInvoke === 'function') {
                         window.invoke('__sugrReady', '[]');
                     } else {
                         setTimeout(ping, 0);
@@ -152,6 +174,7 @@ public final class Window {
     private final Menu menu;
     private final boolean splashScreen;
     private final String splashHtml;
+    private final boolean devTools;
     private final Frontend frontend;
     private final Bridge bridge;
     private final EventBus eventBus;
@@ -161,6 +184,7 @@ public final class Window {
     private final Consumer<Window> onFocus;
     private final Consumer<Window> onBlur;
     private final ResizeListener onResize;
+    private final List<String> allowedOrigins;
 
     private volatile java.util.function.Consumer<Boolean> onMaximizeChange;
 
@@ -181,6 +205,8 @@ public final class Window {
     private UiDispatcher uiDispatcher;
     private AssetServer assetServer;
     private String targetUrl;
+    /** Set in {@link #open} once the frontend URL (and so its origin) is known; null until then = reject everything. */
+    private volatile OriginPolicy originPolicy;
     private long nativeWindowHandle;
     private MemorySegment nativeWindow = MemorySegment.NULL;
     private final boolean isMain;
@@ -206,6 +232,7 @@ public final class Window {
         this.menu = builder.menu;
         this.splashScreen = builder.splashScreen;
         this.splashHtml = builder.splashHtml;
+        this.devTools = resolveDevTools(builder.devTools, System::getenv);
         this.frontend = builder.frontend;
         this.bridge = builder.bridge;
         this.eventBus = builder.eventBus;
@@ -215,6 +242,7 @@ public final class Window {
         this.onFocus = builder.onFocus;
         this.onBlur = builder.onBlur;
         this.onResize = builder.onResize;
+        this.allowedOrigins = List.copyOf(builder.allowedOrigins);
         if (builder.restoreWindowState) {
             this.windowStatePersistor = new WindowStatePersistor(builder.appNameOrDefault());
         }
@@ -224,6 +252,38 @@ public final class Window {
         Window window = new Window(builder, webview, arena, isMain);
         window.open();
         return window;
+    }
+
+    /**
+     * Whether devtools (libwebview's {@code webview_create} {@code debug} flag) should be
+     * enabled, given {@link Builder#devTools}'s explicit setting (if any) and the process
+     * environment. Pulled out as a pure function of its inputs - rather than reading
+     * {@code System.getenv} directly - so the resolution order is unit-testable without
+     * touching real env vars. Precedence, highest first:
+     * <ol>
+     *   <li>{@code explicit}, if the app called {@link Builder#devTools(boolean)}
+     *   <li>{@code SUGR_DEVTOOLS=1}/{@code =0} - forces devtools on/off regardless of env,
+     *       e.g. to debug an otherwise-prod build
+     *   <li>{@code SUGR_DEV_URL} set, or {@code SUGR_ENV=dev} - on by default in dev
+     *   <li>otherwise off - devtools are never enabled in a shipped build by accident
+     * </ol>
+     */
+    static boolean resolveDevTools(Boolean explicit, Function<String, String> env) {
+        if (explicit != null) {
+            return explicit;
+        }
+        String forced = env.apply("SUGR_DEVTOOLS");
+        if ("1".equals(forced)) {
+            return true;
+        }
+        if ("0".equals(forced)) {
+            return false;
+        }
+        String devUrl = env.apply("SUGR_DEV_URL");
+        if (devUrl != null && !devUrl.isBlank()) {
+            return true;
+        }
+        return "dev".equals(env.apply("SUGR_ENV"));
     }
 
     /**
@@ -240,8 +300,11 @@ public final class Window {
         try {
             uiDispatcher.runOnUiThread(() -> {
                 String js = "window.__sugrEvents__.dispatch(" + Json.quote(event) + "," + payloadJson + ")";
-                try {
-                    webviewEval.invoke(handle, arena.allocateFrom(js));
+                // Per-call confined arena, not the app-lifetime shared one: webview_eval copies
+                // the script into a std::string before returning, so the buffer only has to
+                // live for the call itself - see callArena().
+                try (Arena call = callArena()) {
+                    webviewEval.invoke(handle, call.allocateFrom(js));
                 } catch (Throwable t) {
                     throw new RuntimeException(t);
                 }
@@ -259,8 +322,8 @@ public final class Window {
     public void reload() {
         try {
             uiDispatcher.runOnUiThread(() -> {
-                try {
-                    webviewNavigate.invoke(handle, arena.allocateFrom(targetUrl));
+                try (Arena call = callArena()) {
+                    webviewNavigate.invoke(handle, call.allocateFrom(targetUrl));
                 } catch (Throwable t) {
                     throw new RuntimeException(t);
                 }
@@ -715,42 +778,49 @@ public final class Window {
         // HWND value itself - see webview_java, which passes a PointerByReference the same way.
         MemorySegment hwndSlot = arena.allocate(ValueLayout.ADDRESS);
         hwndSlot.set(ValueLayout.ADDRESS, 0, nativeWindow);
-        handle = (MemorySegment) webviewCreate.invoke(1, hwndSlot);
+        handle = (MemorySegment) webviewCreate.invoke(devTools ? 1 : 0, hwndSlot);
         if (handle.equals(MemorySegment.NULL)) {
             throw new IllegalStateException("webview_create returned NULL");
         }
         uiDispatcher = new UiDispatcher(webview, handle);
 
-        webviewSetTitle.invoke(handle, arena.allocateFrom(title));
-        applyChrome();
-        webviewInit.invoke(handle, arena.allocateFrom(EVENTS_BOOTSTRAP_JS));
-        if (splashScreen) {
-            webviewInit.invoke(handle, arena.allocateFrom(buildSplashScript()));
-        }
-
-        MemorySegment invokeStub = webview.upcall(MethodHandles.lookup(), this, "onInvoke",
-                MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
-                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-        webviewBind.invoke(handle, arena.allocateFrom("invoke"), invokeStub, MemorySegment.NULL);
-
-        MemorySegment emitStub = webview.upcall(MethodHandles.lookup(), this, "onEmitFromJs",
-                MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
-                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-        webviewBind.invoke(handle, arena.allocateFrom("emit"), emitStub, MemorySegment.NULL);
-
-        // Framework-owned bridge methods (sugr.app.*, sugr.updater.*). Registered
-        // after the app's own bindings so the dotted names sit alongside them in
-        // the same dispatcher - they can't collide, see SugrBridge.
-        SugrBridge.register(bridge);
-
-        targetUrl = switch (frontend) {
-            case Frontend.DevServer dev -> dev.url();
-            case Frontend.Embedded embedded -> {
-                assetServer = new AssetServer(embedded.resourceRoot());
-                yield assetServer.baseUrl();
+        // The strings handed to webview during setup are copied by libwebview before each
+        // call returns, so they only need to live for this block - not for the whole app.
+        try (Arena setup = callArena()) {
+            webviewSetTitle.invoke(handle, setup.allocateFrom(title));
+            applyChrome();
+            webviewInit.invoke(handle, setup.allocateFrom(EVENTS_BOOTSTRAP_JS));
+            if (splashScreen) {
+                webviewInit.invoke(handle, setup.allocateFrom(buildSplashScript()));
             }
-        };
-        webviewNavigate.invoke(handle, arena.allocateFrom(targetUrl));
+
+            MemorySegment invokeStub = webview.upcall(MethodHandles.lookup(), this, "onInvoke",
+                    MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
+                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            webviewBind.invoke(handle, setup.allocateFrom(RAW_INVOKE_BINDING), invokeStub, MemorySegment.NULL);
+
+            MemorySegment emitStub = webview.upcall(MethodHandles.lookup(), this, "onEmitFromJs",
+                    MethodType.methodType(void.class, MemorySegment.class, MemorySegment.class, MemorySegment.class),
+                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            webviewBind.invoke(handle, setup.allocateFrom(RAW_EMIT_BINDING), emitStub, MemorySegment.NULL);
+
+            // Framework-owned bridge methods (sugr.app.*, sugr.updater.*). They go on the
+            // same Bridge as the app's own bindings, so they're dispatched through the same
+            // onInvoke path - request validation, origin check, and crash-safe replies all
+            // apply to them exactly as to user handlers. Dotted names can't collide with
+            // app bindings, see SugrBridge.
+            SugrBridge.register(bridge);
+
+            targetUrl = switch (frontend) {
+                case Frontend.DevServer dev -> dev.url();
+                case Frontend.Embedded embedded -> {
+                    assetServer = new AssetServer(embedded.resourceRoot());
+                    yield assetServer.baseUrl();
+                }
+            };
+            originPolicy = OriginPolicy.forFrontend(targetUrl, allowedOrigins);
+            webviewNavigate.invoke(handle, setup.allocateFrom(targetUrl));
+        }
 
         restoreSavedWindowState();
         scheduleReveal();
@@ -962,7 +1032,8 @@ public final class Window {
     }
 
     /**
-     * Upcall target for the single "invoke" binding; routes to {@link Bridge#dispatch}.
+     * Upcall target for the single raw invoke binding ({@link #RAW_INVOKE_BINDING}, wrapped
+     * by {@code window.invoke}); checks the caller's origin, then routes to {@link Bridge#dispatch}.
      * The handler may resolve asynchronously (CompletableFuture-backed, e.g. generated
      * by the {@code processor} module) - whichever thread completes it, the reply hops
      * back onto the UI thread via webview_dispatch before calling webview_return.
@@ -973,34 +1044,59 @@ public final class Window {
      */
     private static final String READY_PING_METHOD = "__sugrReady";
 
-    private void onInvoke(MemorySegment seq, MemorySegment req, MemorySegment unusedArg) {
-        String seqStr = seq.reinterpret(1 << 20).getString(0);
-        String reqJson = req.reinterpret(1 << 20).getString(0);
+    /** Name of the raw webview binding {@link #EVENTS_BOOTSTRAP_JS}'s {@code window.invoke} wraps. */
+    private static final String RAW_INVOKE_BINDING = "__sugrInvoke";
+    /** Name of the raw webview binding {@link #EVENTS_BOOTSTRAP_JS}'s {@code window.emit} wraps. */
+    private static final String RAW_EMIT_BINDING = "__sugrEmit";
 
-        List<String> peekedArgs = Json.parseStringArray(reqJson);
-        if (!peekedArgs.isEmpty() && READY_PING_METHOD.equals(peekedArgs.get(0))) {
-            markWebviewReady();
-            reply(seqStr, "null", false);
+    private void onInvoke(MemorySegment seq, MemorySegment req, MemorySegment unusedArg) {
+        // Nothing may escape this method: it's an FFM upcall, and an exception thrown out of
+        // one terminates the JVM. Every request is page-controlled (window.invoke(123) is one
+        // console line away), so failures are turned into a JS-side rejection instead.
+        String seqStr = null;
+        try {
+            seqStr = seq.reinterpret(1 << 20).getString(0);
+            String reqJson = req.reinterpret(1 << 20).getString(0);
+            handleInvoke(seqStr, reqJson);
+        } catch (Throwable t) {
+            System.err.println("[sugr] invoke failed:");
+            t.printStackTrace();
+            if (seqStr != null) {
+                replyError(seqStr, t);
+            }
+        }
+    }
+
+    private void handleInvoke(String seq, String reqJson) {
+        Bridge.Request request;
+        try {
+            request = Bridge.parseRequest(reqJson);
+        } catch (BridgeException e) {
+            replyError(seq, e);
             return;
         }
 
-        bridge.dispatch(reqJson).whenComplete((resultJson, error) -> {
+        // The ready ping is exempt from the origin check: all it does is reveal the window,
+        // which must happen even if the page ended up somewhere unexpected.
+        if (READY_PING_METHOD.equals(request.method())) {
+            markWebviewReady();
+            reply(seq, "null", false);
+            return;
+        }
+
+        BridgeException forbidden = checkOrigin(request);
+        if (forbidden != null) {
+            replyError(seq, forbidden);
+            return;
+        }
+
+        bridge.dispatch(request.method(), request.paramsJson()).whenComplete((resultJson, error) -> {
             try {
-                String finalResult;
-                boolean isError;
                 if (error == null) {
-                    finalResult = resultJson;
-                    isError = false;
+                    reply(seq, resultJson, false);
                 } else {
-                    Throwable cause = error instanceof java.util.concurrent.CompletionException && error.getCause() != null
-                            ? error.getCause() : error;
-                    BridgeException bridgeError = cause instanceof BridgeException be
-                            ? be
-                            : new BridgeException(cause.getMessage() == null ? cause.toString() : cause.getMessage(), cause);
-                    finalResult = bridgeError.toJson().encode();
-                    isError = true;
+                    replyError(seq, error);
                 }
-                reply(seqStr, finalResult, isError);
             } catch (Throwable t) {
                 // whenComplete() swallows exceptions thrown here - log so async failures are visible.
                 System.err.println("[sugr] onInvoke whenComplete failed:");
@@ -1010,18 +1106,52 @@ public final class Window {
     }
 
     /**
+     * Returns a {@code FORBIDDEN} error if {@code request} didn't come from an allowed
+     * origin (see {@link OriginPolicy} - defense-in-depth only, since the page reports its
+     * own origin), or null if it's fine. Rejections are logged so a misconfigured
+     * {@link Builder#allowOrigin} is easy to spot.
+     */
+    private BridgeException checkOrigin(Bridge.Request request) {
+        OriginPolicy policy = originPolicy;
+        if (policy != null && policy.allows(request.origin())) {
+            return null;
+        }
+        System.err.println("[sugr] rejected bridge call \"" + request.method() + "\" from origin "
+                + request.origin() + " (allowed: " + (policy == null ? "none yet" : policy.allowed())
+                + ") - use allowOrigin() to permit it");
+        return new BridgeException(BridgeException.FORBIDDEN,
+                "Bridge calls are not allowed from origin " + request.origin());
+    }
+
+    /** Rejects the JS-side promise for {@code seq} with {@code error} as a {@link BridgeException} JSON payload. */
+    private void replyError(String seq, Throwable error) {
+        Throwable cause = error instanceof java.util.concurrent.CompletionException && error.getCause() != null
+                ? error.getCause() : error;
+        BridgeException bridgeError = cause instanceof BridgeException be
+                ? be
+                : new BridgeException(cause.getMessage() == null ? cause.toString() : cause.getMessage(), cause);
+        reply(seq, bridgeError.toJson().encode(), true);
+    }
+
+    /**
      * Calls webview_return via {@link UiDispatcher}, re-allocating a native buffer for
      * {@code seq} from the Java copy captured in {@link #onInvoke}. See {@code Application}'s
      * former javadoc here (unchanged behavior, just moved onto Window): the native
      * {@code seq} pointer is only valid for the duration of the synchronous invoke
      * callback, so it must be copied before any async work happens.
+     *
+     * <p>The native copies live in a per-call confined arena opened and closed inside the
+     * UI-thread task (so it's created and used on the same thread, as confinement requires).
+     * That's safe because webview_return copies {@code seq}/{@code result} into
+     * {@code std::string}s before returning - the actual resolve is queued with its own
+     * copies - and it stops every reply from leaking into the app-lifetime shared arena.
      */
     private void reply(String seq, String resultJson, boolean isError) {
         try {
             uiDispatcher.runOnUiThread(() -> {
-                try {
-                    MemorySegment seqNative = arena.allocateFrom(seq);
-                    MemorySegment resultNative = arena.allocateFrom(resultJson);
+                try (Arena call = callArena()) {
+                    MemorySegment seqNative = call.allocateFrom(seq);
+                    MemorySegment resultNative = call.allocateFrom(resultJson == null ? "null" : resultJson);
                     webviewReturn.invoke(handle, seqNative, isError ? 1 : 0, resultNative);
                 } catch (Throwable t) {
                     System.err.println("[sugr] webview_return failed:");
@@ -1034,20 +1164,48 @@ public final class Window {
         }
     }
 
-    /** Upcall target for the "emit" binding; JS -> Java events, routed to {@link EventBus}. */
+    /**
+     * Upcall target for the raw emit binding ({@link #RAW_EMIT_BINDING}, wrapped by
+     * {@code window.emit}); JS -> Java events, origin-checked like invoke, routed to {@link EventBus}.
+     * Like {@link #onInvoke}, nothing may escape it: a malformed emit or a failing
+     * listener is logged, and the JS-side promise still settles.
+     */
     private void onEmitFromJs(MemorySegment seq, MemorySegment req, MemorySegment unusedArg) {
-        String reqJson = req.reinterpret(1 << 20).getString(0);
+        boolean failed = false;
         try {
-            List<String> args = Json.parseStringArray(reqJson);
-            if (!args.isEmpty() && args.get(0) != null) {
-                String event = args.get(0);
-                String payload = args.size() > 1 && args.get(1) != null ? args.get(1) : "null";
-                eventBus.dispatch(event, payload);
+            String reqJson = req.reinterpret(1 << 20).getString(0);
+            Bridge.Request request = Bridge.parseRequest(reqJson);
+            // Same [name, payloadJson] envelope as invoke(), so the same validation applies.
+            BridgeException forbidden = checkOrigin(request);
+            if (forbidden != null) {
+                throw forbidden;
             }
-            webviewReturn.invoke(handle, seq, 0, arena.allocateFrom("null"));
+            String payload = request.paramsJson() != null ? request.paramsJson() : "null";
+            eventBus.dispatch(request.method(), payload);
         } catch (Throwable t) {
-            throw new RuntimeException(t);
+            failed = true;
+            System.err.println("[sugr] emit from JS failed:");
+            t.printStackTrace();
         }
+        // Still on the upcall's own thread (the UI thread), so the native seq pointer is valid
+        // and a confined arena is fine here.
+        try (Arena call = callArena()) {
+            webviewReturn.invoke(handle, seq, failed ? 1 : 0, call.allocateFrom("null"));
+        } catch (Throwable t) {
+            System.err.println("[sugr] webview_return failed for emit:");
+            t.printStackTrace();
+        }
+    }
+
+    /**
+     * A short-lived arena for the native copy of one string handed to a webview call
+     * (webview_eval/webview_return/webview_navigate all copy their arguments before
+     * returning). Confined, so it must be opened and closed on the same thread - always
+     * the UI thread here. The app-lifetime {@link #arena} is only for allocations that
+     * have to outlive the call (e.g. upcall stubs).
+     */
+    private static Arena callArena() {
+        return Arena.ofConfined();
     }
 
     public static final class Builder {
@@ -1064,6 +1222,7 @@ public final class Window {
         private Menu menu;
         private boolean splashScreen = false;
         private String splashHtml;
+        private Boolean devTools;
         private Frontend frontend = Frontend.embedded("/frontend");
         private final Bridge bridge = new Bridge();
         private final EventBus eventBus = new EventBus();
@@ -1077,6 +1236,7 @@ public final class Window {
         private String appName;
         private boolean darkTitleBar = false;
         private boolean customTitleBar = false;
+        private final List<String> allowedOrigins = new java.util.ArrayList<>();
 
         public Builder() {
         }
@@ -1150,6 +1310,17 @@ public final class Window {
 
         public Builder frontend(Frontend frontend) {
             this.frontend = frontend;
+            return this;
+        }
+
+        /**
+         * Explicitly enables or disables devtools (right-click Inspect / F12) on this window.
+         * When not called, devtools default to on only in dev - see {@link #resolveDevTools}
+         * for the exact precedence, including the {@code SUGR_DEVTOOLS} escape hatch for
+         * turning them on/off in an otherwise-prod build without rebuilding.
+         */
+        public Builder devTools(boolean devTools) {
+            this.devTools = devTools;
             return this;
         }
 
@@ -1268,6 +1439,27 @@ public final class Window {
          */
         public Builder customTitleBar() {
             this.customTitleBar = true;
+            return this;
+        }
+
+        /**
+         * Also accepts bridge calls ({@code invoke}/{@code emit}) from pages at these
+         * origins, e.g. {@code "https://app.example.com"} (a full URL works too - only its
+         * scheme/host/port is used). By default only the window's own frontend origin is
+         * allowed: the embedded asset server's {@code http://127.0.0.1:<port>}, or the
+         * {@link Frontend#devServer} URL's origin. Calls from anywhere else are rejected
+         * with a {@code FORBIDDEN} error.
+         *
+         * <p>This is defense-in-depth, not a security boundary - the page reports its own
+         * origin, so a malicious script running in the window could spoof it. Blocking
+         * navigation away from the app's origin and a Content-Security-Policy come later;
+         * see {@link OriginPolicy}. Throws {@link IllegalArgumentException} for a value
+         * that isn't a valid origin.
+         */
+        public Builder allowOrigin(String... origins) {
+            for (String origin : origins) {
+                allowedOrigins.add(OriginPolicy.requireOrigin(origin));
+            }
             return this;
         }
     }
