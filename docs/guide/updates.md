@@ -95,13 +95,13 @@ optional except `endpoints` and `pubkey`, which together turn the feature on.
 
 | Key | Default | |
 |---|---|---|
-| `endpoints` | - | One or more manifest URLs, tried in order until one answers. Supports `{{target}}`, `{{arch}}`, `{{currentVersion}}` placeholders. |
+| `endpoints` | - | One or more manifest URLs, tried in order until one answers. Supports `{{target}}`, `{{os}}`, `{{arch}}`, `{{currentVersion}}` and `{{channel}}` placeholders. |
 | `pubkey` | - | Base64 Ed25519 public key from `sugr keygen`. Required for the updater to do anything. |
-| `channel` | `"stable"` | Selects which manifest `sugr package` writes/reads: `latest.json` for `stable`, `latest-<channel>.json` otherwise. |
+| `channel` | `"stable"` | The release channel this build follows. `sugr package` writes `latest.json` for `stable` and `latest-<channel>.json` otherwise; at runtime it only reaches the server through the `{{channel}}` placeholder, e.g. `"https://your-host/latest-{{channel}}.json"` - an endpoint without it fetches the same manifest whatever the channel. |
 | `autoCheck` | `true` | Check automatically ~5s after the window is ready. Set `false` to only check when your own code calls `updater.check()`. |
 | `prompt` | `true` | Show the framework's own native "update available" dialog and drive the whole flow. Set `false` to build your own UI against the events/API below. |
 | `allowDowngrade` | `false` | Accept a manifest whose version is *older* than the running one (useful for a channel rollback). |
-| `allowInsecure` | `false` | Allow `http://` endpoints - testing only, never for production. |
+| `allowInsecure` | `false` | Allow `http://` endpoints when running unpackaged (tests, a JVM run against a local server). **Ignored in packaged builds**, so a flag left on from testing can't ship. |
 
 ## How an update is applied
 

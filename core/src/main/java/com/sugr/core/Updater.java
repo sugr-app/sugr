@@ -143,7 +143,25 @@ public final class Updater {
         this.metadata = metadata;
         this.settings = settings;
         this.executor = executor;
-        this.http = new UpdateDownloader(settings.allowInsecure());
+        this.http = new UpdateDownloader(
+                effectiveAllowInsecure(settings.allowInsecure(), AppInstall.current().layout()));
+    }
+
+    /**
+     * {@code allowInsecure} only ever takes effect outside a packaged build.
+     * A shipped app accepting plain HTTP would let anyone on the network pin
+     * its users to an old release, and a config flag left on from local
+     * testing is exactly how that would ship - so packaged builds ignore it.
+     */
+    static boolean effectiveAllowInsecure(boolean configured, AppInstall.Layout layout) {
+        if (!configured) {
+            return false;
+        }
+        if (layout != AppInstall.Layout.UNPACKAGED) {
+            System.err.println("[sugr] ignoring \"allowInsecure\" - it only applies to unpackaged/dev runs.");
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -347,7 +365,7 @@ public final class Updater {
         List<String> failures = new ArrayList<>();
 
         for (String rawEndpoint : settings.endpoints()) {
-            String url = expandPlaceholders(rawEndpoint, current, target);
+            String url = expandPlaceholders(rawEndpoint, current, target, settings.channel());
             try {
                 String body = http.fetchManifest(URI.create(url));
                 if (body == null) {
@@ -509,10 +527,13 @@ public final class Updater {
     /**
      * Substitutes the values an endpoint may want to route on. Both
      * {@code currentVersion} and Tauri's {@code current_version} spelling are
-     * accepted so an existing update server works unchanged.
+     * accepted so an existing update server works unchanged; {@code channel}
+     * is how a configured {@code "channel"} reaches the server at all (e.g.
+     * {@code https://host/latest-{{channel}}.json}).
      */
-    static String expandPlaceholders(String endpoint, SemVer current, String target) {
+    static String expandPlaceholders(String endpoint, SemVer current, String target, String channel) {
         return endpoint
+                .replace("{{channel}}", channel)
                 .replace("{{target}}", target)
                 .replace("{{os}}", UpdateManifest.currentOs())
                 .replace("{{arch}}", UpdateManifest.currentArch())
