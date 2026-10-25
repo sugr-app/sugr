@@ -1,5 +1,7 @@
 package com.sugr.core;
 
+import com.sugr.core.net.SystemProxy;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -7,6 +9,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -37,16 +40,20 @@ final class UpdateDownloader {
     private static final long RETRY_BASE_DELAY_MS = 1000;
 
     /** Manifests are small; a huge body here means something is wrong, so cap it rather than buffer it all. */
-    private static final int MAX_MANIFEST_BYTES = 1024 * 1024;
+    static final int MAX_MANIFEST_BYTES = 1024 * 1024;
 
     private final HttpClient client;
     private final boolean allowInsecure;
 
     UpdateDownloader(boolean allowInsecure) {
         this.allowInsecure = allowInsecure;
+        // The machine's proxy, not just the JDK's: behind a corporate proxy a
+        // direct connection simply times out, and to the user that looks like
+        // "this app never updates".
         this.client = HttpClient.newBuilder()
                 .connectTimeout(CONNECT_TIMEOUT)
                 .followRedirects(HttpClient.Redirect.NORMAL)
+                .proxy(SystemProxy.selector())
                 .build();
     }
 
@@ -71,21 +78,32 @@ final class UpdateDownloader {
                 .timeout(MANIFEST_TIMEOUT)
                 .GET()
                 .build();
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
 
-        int status = response.statusCode();
-        if (status == 204) {
-            return null;
+        try (InputStream in = response.body()) {
+            int status = response.statusCode();
+            if (status == 204) {
+                return null;
+            }
+            if (status < 200 || status >= 300) {
+                throw new IOException("Update endpoint " + endpoint + " returned HTTP " + status);
+            }
+            return readCapped(in, MAX_MANIFEST_BYTES, endpoint.toString());
         }
-        if (status < 200 || status >= 300) {
-            throw new IOException("Update endpoint " + endpoint + " returned HTTP " + status);
+    }
+
+    /**
+     * Reads at most {@code limit} bytes as UTF-8, failing as soon as there's a
+     * byte more - so the cap bounds memory rather than being checked after the
+     * whole body has already been buffered.
+     */
+    static String readCapped(InputStream in, int limit, String source) throws IOException {
+        byte[] bytes = in.readNBytes(limit + 1);
+        if (bytes.length > limit) {
+            throw new IOException("Update manifest from " + source + " is implausibly large (over "
+                    + limit + " bytes)");
         }
-        String body = response.body();
-        if (body.length() > MAX_MANIFEST_BYTES) {
-            throw new IOException("Update manifest from " + endpoint + " is implausibly large ("
-                    + body.length() + " bytes)");
-        }
-        return body;
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     /**
