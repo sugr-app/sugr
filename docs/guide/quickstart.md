@@ -5,6 +5,9 @@ sugr isn't published anywhere yet (Maven Central, npm, ...) - that's planned
 for a later milestone. Today, `sugr init` scaffolds a new app *inside your
 sugr checkout*, so it can depend on `core`/`bridge` as sibling Gradle
 projects. This quickstart assumes you already have the sugr monorepo cloned.
+
+**Platform:** Windows 10/11 (x64) is the supported platform today. macOS and
+Linux are planned.
 :::
 
 ## Prerequisites

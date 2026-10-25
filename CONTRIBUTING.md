@@ -12,7 +12,7 @@ sugr doctor   # or: run the checks in cli/src/main/java/com/sugr/cli/DoctorComma
 You'll need:
 - A GraalVM JDK (25+) - see `docs/guide/quickstart.md` for the SDKMAN
   install path used during development
-- Node.js 20+ and pnpm
+- Node.js 24+ and pnpm 10 (CI uses the same versions)
 - On Windows, Visual Studio Build Tools (for native-image's C compiler step)
 - On Windows 10 machines without it preinstalled, the WebView2 runtime
 
@@ -20,8 +20,14 @@ You'll need:
 
 ```sh
 ./gradlew build          # core, bridge, processor, cli, examples/sql-client
+./gradlew :cli:nativeCompile   # optional: the sugr CLI as a native binary (needs GraalVM; MSVC on Windows)
 pnpm install              # links @sugr/runtime and docs deps across the workspace
 ```
+
+## Branches
+
+- Work on a feature branch and open a PR into `dev`.
+- `dev` is merged into `main` at each release.
 
 ## Project layout
 
@@ -30,7 +36,7 @@ pnpm install              # links @sugr/runtime and docs deps across the workspa
 | `core/` | `Application`/`Frontend` - window lifecycle, FFM webview bindings |
 | `bridge/` | `Bridge`, `Json`, `Bind`, `EventBus` - the wire protocol, no webview knowledge |
 | `processor/` | `@Bind` annotation processor - generates dispatchers + TS stubs |
-| `cli/` | The `sugr` command (`doctor`/`init`/`dev`/`build`/`package`) |
+| `cli/` | The `sugr` command (`doctor`/`init`/`dev`/`debug`/`build`/`package`) |
 | `runtime-js/` | `@sugr/runtime` - the JS half of the bridge |
 | `templates/react-ts/` | What `sugr init` scaffolds |
 | `examples/sql-client/` | The reference app - exercises every part of the stack |
