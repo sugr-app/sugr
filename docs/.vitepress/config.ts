@@ -15,13 +15,14 @@ export default withMermaid(defineConfig({
       // CONTRIBUTING.md deliberately lives at the repo root (GitHub's standard
       // discovery spot - surfaced automatically in the "Contribute" tab and when
       // opening an issue/PR), not duplicated into this user-facing docs site.
-      { text: 'Contributing', link: 'https://github.com/alexnguyen03/sugur/blob/master/CONTRIBUTING.md' },
+      { text: 'Contributing', link: 'https://github.com/sugr-app/sugr/blob/main/CONTRIBUTING.md' },
     ],
 
     sidebar: [
       {
         text: 'Guide',
         items: [
+          { text: 'Why sugr?', link: '/why' },
           { text: 'Quickstart', link: '/guide/quickstart' },
           { text: 'Window & frontend', link: '/guide/window' },
           { text: 'Binding Java to JS (@Bind)', link: '/guide/bind' },
@@ -43,7 +44,9 @@ export default withMermaid(defineConfig({
       },
     ],
 
-    socialLinks: [],
+    socialLinks: [
+      { icon: 'github', link: 'https://github.com/sugr-app/sugr' },
+    ],
 
     search: {
       provider: 'local',
