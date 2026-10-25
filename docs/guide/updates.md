@@ -17,6 +17,13 @@ cd my-app
 sugr keygen
 ```
 
+It asks for a passphrase to encrypt the key file with (twice; Enter for
+none). For a script, set `SUGR_KEY_PASSWORD` instead - the passphrase is
+never a command-line flag, where it would end up in shell history and
+process listings. With no terminal and no `SUGR_KEY_PASSWORD`, `keygen`
+stops and says so. On Windows the key file's ACL is reset to the current
+user only (`icacls /inheritance:r`); elsewhere it's `chmod 600`.
+
 This prints a public key and the block to paste into `sugr.config.json`:
 
 ```json
@@ -36,6 +43,15 @@ Then, for every release:
 SUGR_SIGNING_KEY=~/.sugr/my-app.key \
   sugr package --base-url https://your-host
 ```
+
+or in PowerShell on Windows:
+
+```powershell
+$env:SUGR_SIGNING_KEY = "$HOME\.sugr\my-app.key"
+sugr package --base-url https://your-host
+```
+
+(plus `SUGR_SIGNING_KEY_PASSWORD` if the key has a passphrase).
 
 Upload everything `sugr package` writes to `dist/` - the installer, the
 update artifact, its `.sig`, and `latest.json` - to wherever `--base-url`
