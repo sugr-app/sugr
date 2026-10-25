@@ -149,6 +149,9 @@ function subscribe<T>(name: string, listener: (payload: T) => void): () => void 
  * available (under `sugr dev`, in an unpackaged build, or with no updater
  * configured) - check {@link isSupported} first if you want to hide the UI
  * entirely rather than handle the rejection.
+ *
+ * @experimental The updater API and its events may change in the next minor
+ * version.
  */
 export const updater = {
   /** Whether this build can update itself at all. */
