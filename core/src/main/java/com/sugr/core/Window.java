@@ -14,6 +14,7 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
@@ -152,6 +153,7 @@ public final class Window {
     private final Menu menu;
     private final boolean splashScreen;
     private final String splashHtml;
+    private final boolean devTools;
     private final Frontend frontend;
     private final Bridge bridge;
     private final EventBus eventBus;
@@ -206,6 +208,7 @@ public final class Window {
         this.menu = builder.menu;
         this.splashScreen = builder.splashScreen;
         this.splashHtml = builder.splashHtml;
+        this.devTools = resolveDevTools(builder.devTools, System::getenv);
         this.frontend = builder.frontend;
         this.bridge = builder.bridge;
         this.eventBus = builder.eventBus;
@@ -224,6 +227,38 @@ public final class Window {
         Window window = new Window(builder, webview, arena, isMain);
         window.open();
         return window;
+    }
+
+    /**
+     * Whether devtools (libwebview's {@code webview_create} {@code debug} flag) should be
+     * enabled, given {@link Builder#devTools}'s explicit setting (if any) and the process
+     * environment. Pulled out as a pure function of its inputs - rather than reading
+     * {@code System.getenv} directly - so the resolution order is unit-testable without
+     * touching real env vars. Precedence, highest first:
+     * <ol>
+     *   <li>{@code explicit}, if the app called {@link Builder#devTools(boolean)}
+     *   <li>{@code SUGR_DEVTOOLS=1}/{@code =0} - forces devtools on/off regardless of env,
+     *       e.g. to debug an otherwise-prod build
+     *   <li>{@code SUGR_DEV_URL} set, or {@code SUGR_ENV=dev} - on by default in dev
+     *   <li>otherwise off - devtools are never enabled in a shipped build by accident
+     * </ol>
+     */
+    static boolean resolveDevTools(Boolean explicit, Function<String, String> env) {
+        if (explicit != null) {
+            return explicit;
+        }
+        String forced = env.apply("SUGR_DEVTOOLS");
+        if ("1".equals(forced)) {
+            return true;
+        }
+        if ("0".equals(forced)) {
+            return false;
+        }
+        String devUrl = env.apply("SUGR_DEV_URL");
+        if (devUrl != null && !devUrl.isBlank()) {
+            return true;
+        }
+        return "dev".equals(env.apply("SUGR_ENV"));
     }
 
     /**
@@ -715,7 +750,7 @@ public final class Window {
         // HWND value itself - see webview_java, which passes a PointerByReference the same way.
         MemorySegment hwndSlot = arena.allocate(ValueLayout.ADDRESS);
         hwndSlot.set(ValueLayout.ADDRESS, 0, nativeWindow);
-        handle = (MemorySegment) webviewCreate.invoke(1, hwndSlot);
+        handle = (MemorySegment) webviewCreate.invoke(devTools ? 1 : 0, hwndSlot);
         if (handle.equals(MemorySegment.NULL)) {
             throw new IllegalStateException("webview_create returned NULL");
         }
@@ -1055,6 +1090,7 @@ public final class Window {
         private Menu menu;
         private boolean splashScreen = false;
         private String splashHtml;
+        private Boolean devTools;
         private Frontend frontend = Frontend.embedded("/frontend");
         private final Bridge bridge = new Bridge();
         private final EventBus eventBus = new EventBus();
@@ -1141,6 +1177,17 @@ public final class Window {
 
         public Builder frontend(Frontend frontend) {
             this.frontend = frontend;
+            return this;
+        }
+
+        /**
+         * Explicitly enables or disables devtools (right-click Inspect / F12) on this window.
+         * When not called, devtools default to on only in dev - see {@link #resolveDevTools}
+         * for the exact precedence, including the {@code SUGR_DEVTOOLS} escape hatch for
+         * turning them on/off in an otherwise-prod build without rebuilding.
+         */
+        public Builder devTools(boolean devTools) {
+            this.devTools = devTools;
             return this;
         }
 
