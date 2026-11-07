@@ -4,10 +4,12 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 
 /**
- * Native file/message dialogs. On Windows this shells out to a short
+ * Native file/folder/message dialogs. On Windows this shells out to a short
  * PowerShell + {@code System.Windows.Forms} script rather than binding
  * {@code comdlg32.dll}'s {@code GetOpenFileNameW}/{@code GetSaveFileNameW}
  * directly via FFM - those take a pointer to the ~150-byte {@code OPENFILENAMEW}
@@ -26,6 +28,48 @@ public final class Dialogs {
     private Dialogs() {
     }
 
+    /**
+     * A named file-type filter for {@link #openFile}, {@link #openFiles}, and
+     * {@link #saveFile} - e.g. {@code new FileFilter("SQL scripts", "sql", "ddl")}.
+     * Pass {@code "*"} as the extension for an "All files" entry.
+     */
+    public record FileFilter(String label, List<String> extensions) {
+
+        public FileFilter {
+            if (label == null || label.isBlank()) {
+                throw new IllegalArgumentException("Filter label must not be null or blank");
+            }
+            if (extensions == null || extensions.isEmpty()) {
+                throw new IllegalArgumentException("Filter must specify at least one extension");
+            }
+            List<String> cleaned = new ArrayList<>(extensions.size());
+            for (String ext : extensions) {
+                cleaned.add(normalizeExtension(ext));
+            }
+            extensions = List.copyOf(cleaned);
+        }
+
+        public FileFilter(String label, String... extensions) {
+            this(label, extensions == null ? List.of() : List.of(extensions));
+        }
+
+        private static String normalizeExtension(String ext) {
+            if (ext == null) {
+                throw new IllegalArgumentException("Filter extension must not be null");
+            }
+            String trimmed = ext.trim();
+            if (trimmed.startsWith("*.")) {
+                trimmed = trimmed.substring(2);
+            } else if (trimmed.startsWith(".")) {
+                trimmed = trimmed.substring(1);
+            }
+            if (trimmed.isEmpty() || trimmed.contains("|") || trimmed.contains(";")) {
+                throw new IllegalArgumentException("Invalid file extension: " + ext);
+            }
+            return trimmed;
+        }
+    }
+
     /** Shows a native "open file" dialog; returns the picked path, or null if cancelled. */
     public static String openFile(String title, String... extensions) {
         return openFile(0, title, extensions);
@@ -38,14 +82,98 @@ public final class Dialogs {
      * non-Windows platforms (falls back to {@link #openFile(String, String...)}'s behavior).
      */
     public static String openFile(long ownerHwnd, String title, String... extensions) {
+        return openFileWithWinFilter(ownerHwnd, title, windowsFilter(extensions));
+    }
+
+    /** Shows a native "open file" dialog with named filter groups; returns the picked path, or null if cancelled. */
+    public static String openFile(String title, List<FileFilter> filters) {
+        return openFile(0, title, filters);
+    }
+
+    /** Like {@link #openFile(String, List)}, owned by {@code ownerHwnd}. */
+    public static String openFile(long ownerHwnd, String title, List<FileFilter> filters) {
+        return openFileWithWinFilter(ownerHwnd, title, windowsFilter(filters));
+    }
+
+    private static String openFileWithWinFilter(long ownerHwnd, String title, String winFilter) {
         try {
             if (Os.isWindows()) {
-                return runPowerShell(fileDialogScript("OpenFileDialog", ownerHwnd, title, extensions));
+                return runPowerShell(fileDialogScript("OpenFileDialog", ownerHwnd, title, winFilter, false));
             } else if (Os.isMac()) {
                 return runAndTrim("osascript", "-e", "POSIX path of (choose file with prompt "
                         + appleScriptQuote(title) + ")");
             } else {
                 return runAndTrim("zenity", "--file-selection", "--title=" + title);
+            }
+        } catch (IOException | InterruptedException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Shows a native multi-select "open files" dialog; returns the picked paths
+     * in selection order, or an empty list if cancelled.
+     */
+    public static List<String> openFiles(String title, String... extensions) {
+        return openFiles(0, title, extensions);
+    }
+
+    /** Like {@link #openFiles(String, String...)}, owned by {@code ownerHwnd}. */
+    public static List<String> openFiles(long ownerHwnd, String title, String... extensions) {
+        return openFilesWithWinFilter(ownerHwnd, title, windowsFilter(extensions));
+    }
+
+    /** Shows a native multi-select "open files" dialog with named filter groups. */
+    public static List<String> openFiles(String title, List<FileFilter> filters) {
+        return openFiles(0, title, filters);
+    }
+
+    /** Like {@link #openFiles(String, List)}, owned by {@code ownerHwnd}. */
+    public static List<String> openFiles(long ownerHwnd, String title, List<FileFilter> filters) {
+        return openFilesWithWinFilter(ownerHwnd, title, windowsFilter(filters));
+    }
+
+    private static List<String> openFilesWithWinFilter(long ownerHwnd, String title, String winFilter) {
+        try {
+            String output;
+            if (Os.isWindows()) {
+                output = runPowerShell(fileDialogScript("OpenFileDialog", ownerHwnd, title, winFilter, true));
+            } else if (Os.isMac()) {
+                output = runAndTrim("osascript", "-e",
+                        "set picked to choose file with prompt " + appleScriptQuote(title)
+                                + " with multiple selections allowed\n"
+                                + "set out to \"\"\n"
+                                + "repeat with f in picked\n"
+                                + "  set out to out & (POSIX path of f) & linefeed\n"
+                                + "end repeat\n"
+                                + "return out");
+            } else {
+                output = runAndTrim("zenity", "--file-selection", "--multiple", "--separator=\n", "--title=" + title);
+            }
+            return parseMultiFileOutput(output);
+        } catch (IOException | InterruptedException e) {
+            return List.of();
+        }
+    }
+
+    /**
+     * Shows a native "choose folder" dialog; returns the selected directory path,
+     * or {@code null} if cancelled.
+     */
+    public static String openFolder(String title) {
+        return openFolder(0, title);
+    }
+
+    /** Like {@link #openFolder(String)}, owned by {@code ownerHwnd}. */
+    public static String openFolder(long ownerHwnd, String title) {
+        try {
+            if (Os.isWindows()) {
+                return runPowerShell(folderDialogScript(ownerHwnd, title));
+            } else if (Os.isMac()) {
+                return runAndTrim("osascript", "-e", "POSIX path of (choose folder with prompt "
+                        + appleScriptQuote(title) + ")");
+            } else {
+                return runAndTrim("zenity", "--file-selection", "--directory", "--title=" + title);
             }
         } catch (IOException | InterruptedException e) {
             return null;
@@ -59,9 +187,23 @@ public final class Dialogs {
 
     /** Like {@link #saveFile(String, String...)}, owned by the given native window handle - see {@link #openFile(long, String, String...)}. */
     public static String saveFile(long ownerHwnd, String title, String... extensions) {
+        return saveFileWithWinFilter(ownerHwnd, title, windowsFilter(extensions));
+    }
+
+    /** Shows a native "save file" dialog with named filter groups; returns the picked path, or null if cancelled. */
+    public static String saveFile(String title, List<FileFilter> filters) {
+        return saveFile(0, title, filters);
+    }
+
+    /** Like {@link #saveFile(String, List)}, owned by {@code ownerHwnd}. */
+    public static String saveFile(long ownerHwnd, String title, List<FileFilter> filters) {
+        return saveFileWithWinFilter(ownerHwnd, title, windowsFilter(filters));
+    }
+
+    private static String saveFileWithWinFilter(long ownerHwnd, String title, String winFilter) {
         try {
             if (Os.isWindows()) {
-                return runPowerShell(fileDialogScript("SaveFileDialog", ownerHwnd, title, extensions));
+                return runPowerShell(fileDialogScript("SaveFileDialog", ownerHwnd, title, winFilter, false));
             } else if (Os.isMac()) {
                 return runAndTrim("osascript", "-e", "POSIX path of (choose file name with prompt "
                         + appleScriptQuote(title) + ")");
@@ -143,17 +285,36 @@ public final class Dialogs {
         }
     }
 
-    private static String fileDialogScript(String dialogType, long ownerHwnd, String title, String[] extensions) {
+    static String fileDialogScript(String dialogType, long ownerHwnd, String title,
+                                   String winFilter, boolean multiSelect) {
         String showDialog = ownerHwnd == 0 ? "$dlg.ShowDialog()" : "$dlg.ShowDialog($owner)";
+        String multiLine = multiSelect ? "$dlg.Multiselect = $true\n" : "";
+        String writeOutput = multiSelect
+                ? "foreach ($f in $dlg.FileNames) { Write-Output $f }"
+                : "Write-Output $dlg.FileName";
         return win32WindowHelper(ownerHwnd) + """
                 Add-Type -AssemblyName System.Windows.Forms
                 $dlg = New-Object System.Windows.Forms.%s
                 $dlg.Title = %s
                 $dlg.Filter = %s
-                if (%s -eq [System.Windows.Forms.DialogResult]::OK) {
-                    Write-Output $dlg.FileName
+                %sif (%s -eq [System.Windows.Forms.DialogResult]::OK) {
+                    %s
                 }
-                """.formatted(dialogType, psQuote(title), psQuote(windowsFilter(extensions)), showDialog);
+                """.formatted(dialogType, psQuote(title), psQuote(winFilter), multiLine, showDialog, writeOutput);
+    }
+
+    static String folderDialogScript(long ownerHwnd, String title) {
+        String showDialog = ownerHwnd == 0 ? "$dlg.ShowDialog()" : "$dlg.ShowDialog($owner)";
+        return win32WindowHelper(ownerHwnd) + """
+                Add-Type -AssemblyName System.Windows.Forms
+                $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+                $dlg.Description = %s
+                $dlg.UseDescriptionForTitle = $true
+                $dlg.ShowNewFolderButton = $true
+                if (%s -eq [System.Windows.Forms.DialogResult]::OK) {
+                    Write-Output $dlg.SelectedPath
+                }
+                """.formatted(psQuote(title), showDialog);
     }
 
     /**
@@ -181,7 +342,7 @@ public final class Dialogs {
                 """.formatted(ownerHwnd);
     }
 
-    private static String windowsFilter(String[] extensions) {
+    static String windowsFilter(String[] extensions) {
         if (extensions == null || extensions.length == 0) {
             return "All files (*.*)|*.*";
         }
@@ -190,9 +351,47 @@ public final class Dialogs {
             if (i > 0) {
                 patterns.append(';');
             }
-            patterns.append("*.").append(extensions[i]);
+            String ext = extensions[i].startsWith(".") ? extensions[i].substring(1) : extensions[i];
+            patterns.append("*.").append(ext);
         }
         return patterns + " files (" + patterns + ")|" + patterns;
+    }
+
+    static String windowsFilter(List<FileFilter> filters) {
+        if (filters == null || filters.isEmpty()) {
+            return "All files (*.*)|*.*";
+        }
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < filters.size(); i++) {
+            if (i > 0) {
+                out.append('|');
+            }
+            FileFilter f = filters.get(i);
+            StringBuilder patterns = new StringBuilder();
+            for (int j = 0; j < f.extensions().size(); j++) {
+                if (j > 0) {
+                    patterns.append(';');
+                }
+                patterns.append("*.").append(f.extensions().get(j));
+            }
+            String cleanLabel = f.label().replace('|', '/');
+            out.append(cleanLabel).append(" (").append(patterns).append(")|").append(patterns);
+        }
+        return out.toString();
+    }
+
+    static List<String> parseMultiFileOutput(String output) {
+        if (output == null || output.isBlank()) {
+            return List.of();
+        }
+        List<String> files = new ArrayList<>();
+        for (String line : output.split("\\R")) {
+            String trimmed = line.strip();
+            if (!trimmed.isEmpty()) {
+                files.add(trimmed);
+            }
+        }
+        return List.copyOf(files);
     }
 
     /** Wraps a string as a single-quoted PowerShell literal (only ' needs escaping - doubled). */
