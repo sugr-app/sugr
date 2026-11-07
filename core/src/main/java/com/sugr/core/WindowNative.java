@@ -60,6 +60,7 @@ final class WindowNative {
     private static final int WM_SIZE = 0x0005;
     private static final int WM_SETFOCUS = 0x0007;
     private static final int WM_KILLFOCUS = 0x0008;
+    private static final int WM_SETTINGCHANGE = 0x001A;
     private static final int WM_COMMAND = 0x0111;
     private static final int WM_APP = 0x8000;
     private static final int WM_SUGR_DEFERRED = WM_APP + 1;
@@ -1031,6 +1032,12 @@ final class WindowNative {
                     window.fireFocusChanged(false);
                     return callOriginal(originalProc, hwnd, msg, wParam, lParam);
                 }
+                case WM_SETTINGCHANGE -> {
+                    if (isThemeSettingChange(lParam)) {
+                        Thread.ofVirtual().start(window::onSystemThemePossiblyChanged);
+                    }
+                    return callOriginal(originalProc, hwnd, msg, wParam, lParam);
+                }
                 case WM_COMMAND -> {
                     int menuItemId = (int) (wParam & 0xFFFF);
                     Runnable action = menuItemAction(menuItemId);
@@ -1081,6 +1088,25 @@ final class WindowNative {
 
     private static long callOriginal(long originalProc, MemorySegment hwnd, int msg, long wParam, long lParam) throws Throwable {
         return (long) CALL_WINDOW_PROC.invoke(MemorySegment.ofAddress(originalProc), hwnd, msg, wParam, lParam);
+    }
+
+    /**
+     * Windows broadcasts {@code WM_SETTINGCHANGE} with {@code lParam} pointing to
+     * the wide string {@code "ImmersiveColorSet"} when the user switches between
+     * Light and Dark mode in Settings. Filtering here avoids spawning a registry
+     * check for unrelated {@code WM_SETTINGCHANGE} broadcasts.
+     */
+    private static boolean isThemeSettingChange(long lParam) {
+        if (lParam == 0L) {
+            return true;
+        }
+        try {
+            String area = MemorySegment.ofAddress(lParam).reinterpret(64)
+                    .getString(0, StandardCharsets.UTF_16LE);
+            return "ImmersiveColorSet".equalsIgnoreCase(area);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     /**

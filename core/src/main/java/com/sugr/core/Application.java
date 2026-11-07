@@ -236,6 +236,18 @@ public final class Application {
             return this;
         }
 
+        /** See {@link Window.Builder#followSystemTheme()}. */
+        public Builder followSystemTheme() {
+            windowBuilder.followSystemTheme();
+            return this;
+        }
+
+        /** See {@link Window.Builder#followSystemTheme(boolean)}. */
+        public Builder followSystemTheme(boolean follow) {
+            windowBuilder.followSystemTheme(follow);
+            return this;
+        }
+
         /** See {@link Window.Builder#customTitleBar}. */
         public Builder customTitleBar() {
             windowBuilder.customTitleBar();
@@ -304,6 +316,12 @@ public final class Application {
         /** See {@link Window.Builder#onResize}. */
         public Builder onResize(Window.ResizeListener handler) {
             windowBuilder.onResize(handler);
+            return this;
+        }
+
+        /** See {@link Window.Builder#onThemeChanged}. */
+        public Builder onThemeChanged(Consumer<SystemTheme> handler) {
+            windowBuilder.onThemeChanged(handler);
             return this;
         }
 

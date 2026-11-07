@@ -74,6 +74,16 @@ export interface AppInfo {
   identifier: string
 }
 
+/** Standard per-OS directories for this app's data, cache, and logs. */
+export interface AppPathsInfo {
+  dataDir: string
+  cacheDir: string
+  logDir: string
+}
+
+/** OS color scheme reported by `app.theme()` and `app.onThemeChanged()`. */
+export type ThemeMode = 'light' | 'dark'
+
 /** A release newer than the one running. */
 export interface UpdateInfo {
   version: string
@@ -110,10 +120,30 @@ export interface UpdateManualRequired {
   managed: boolean
 }
 
-/** Name/version/identifier of the running app. */
+const THEME_CHANGED_EVENT = 'sugr://theme-changed'
+
+/** Name/version/identifier, standard OS paths, and system theme of the running app. */
 export const app = {
   info(): Promise<AppInfo> {
     return invoke<AppInfo>('sugr.app.info')
+  },
+
+  /** Resolves (and creates) the app's OS-standard data, cache, and log directories. */
+  paths(): Promise<AppPathsInfo> {
+    return invoke<AppPathsInfo>('sugr.app.paths')
+  },
+
+  /** Queries the OS's current color scheme (`"light"` or `"dark"`). */
+  theme(): Promise<ThemeMode> {
+    return invoke<ThemeMode>('sugr.app.theme')
+  },
+
+  /**
+   * Fires whenever the user switches the OS color scheme between light and dark
+   * while the app is open. Returns an unsubscribe function.
+   */
+  onThemeChanged(listener: (theme: ThemeMode) => void): () => void {
+    return subscribe<ThemeMode>(THEME_CHANGED_EVENT, listener)
   },
 }
 

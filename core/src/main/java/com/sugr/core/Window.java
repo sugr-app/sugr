@@ -169,6 +169,7 @@ public final class Window {
     private final boolean resizable;
     private final boolean alwaysOnTop;
     private final boolean darkTitleBar;
+    private final boolean followSystemTheme;
     private final boolean customTitleBar;
     private final String iconPath;
     private final Menu menu;
@@ -184,9 +185,11 @@ public final class Window {
     private final Consumer<Window> onFocus;
     private final Consumer<Window> onBlur;
     private final ResizeListener onResize;
+    private final Consumer<SystemTheme> onThemeChanged;
     private final List<String> allowedOrigins;
 
     private volatile java.util.function.Consumer<Boolean> onMaximizeChange;
+    private volatile SystemTheme lastReportedTheme;
 
     private WindowStatePersistor windowStatePersistor;
     private boolean windowStateRestored = false;
@@ -227,6 +230,7 @@ public final class Window {
         this.resizable = builder.resizable;
         this.alwaysOnTop = builder.alwaysOnTop;
         this.darkTitleBar = builder.darkTitleBar;
+        this.followSystemTheme = builder.followSystemTheme;
         this.customTitleBar = builder.customTitleBar;
         this.iconPath = builder.iconPath;
         this.menu = builder.menu;
@@ -242,6 +246,7 @@ public final class Window {
         this.onFocus = builder.onFocus;
         this.onBlur = builder.onBlur;
         this.onResize = builder.onResize;
+        this.onThemeChanged = builder.onThemeChanged;
         this.allowedOrigins = List.copyOf(builder.allowedOrigins);
         if (builder.restoreWindowState) {
             this.windowStatePersistor = new WindowStatePersistor(builder.appNameOrDefault());
@@ -918,7 +923,11 @@ public final class Window {
             }
         }
         MemorySegment nativeWindow = (MemorySegment) webviewGetWindow.invoke(handle);
-        if (darkTitleBar) {
+        if (followSystemTheme) {
+            SystemTheme currentTheme = SystemTheme.current();
+            lastReportedTheme = currentTheme;
+            WindowNative.setDarkTitleBar(nativeWindow, currentTheme.isDark());
+        } else if (darkTitleBar) {
             WindowNative.setDarkTitleBar(nativeWindow, true);
         }
         if (customTitleBar) {
@@ -1029,6 +1038,32 @@ public final class Window {
     /** Registers a callback fired when the window is maximized/restored natively. */
     public void onMaximizeChange(java.util.function.Consumer<Boolean> listener) {
         this.onMaximizeChange = listener;
+    }
+
+    /**
+     * Called (off the UI thread) when the OS broadcasts {@code WM_SETTINGCHANGE}
+     * for {@code ImmersiveColorSet}. Deduplicates repeated broadcasts so the title
+     * bar, Java listener, and JS {@code sugr://theme-changed} event only fire when
+     * the resolved {@link SystemTheme} actually changes.
+     */
+    void onSystemThemePossiblyChanged() {
+        try {
+            SystemTheme current = SystemTheme.current();
+            if (current == lastReportedTheme) {
+                return;
+            }
+            lastReportedTheme = current;
+            if (followSystemTheme) {
+                setDarkTitleBar(current.isDark());
+            }
+            if (onThemeChanged != null) {
+                onThemeChanged.accept(current);
+            }
+            emit("sugr://theme-changed", Json.quote(current.wireName()));
+        } catch (Throwable t) {
+            System.err.println("[sugr] failed to handle OS theme change:");
+            t.printStackTrace();
+        }
     }
 
     /**
@@ -1232,9 +1267,11 @@ public final class Window {
         private Consumer<Window> onFocus;
         private Consumer<Window> onBlur;
         private ResizeListener onResize;
+        private Consumer<SystemTheme> onThemeChanged;
         private boolean restoreWindowState = false;
         private String appName;
         private boolean darkTitleBar = false;
+        private boolean followSystemTheme = false;
         private boolean customTitleBar = false;
         private final List<String> allowedOrigins = new java.util.ArrayList<>();
 
@@ -1388,6 +1425,15 @@ public final class Window {
         }
 
         /**
+         * Called when the OS switches between light and dark mode while this window is
+         * open (via {@code WM_SETTINGCHANGE} on Windows).
+         */
+        public Builder onThemeChanged(Consumer<SystemTheme> handler) {
+            this.onThemeChanged = handler;
+            return this;
+        }
+
+        /**
          * Enables restoring this window's position/size (and maximized state) from the
          * last session on the next launch. The state is saved automatically when the
          * window closes and restored when it opens. Requires {@link #appName} to be set
@@ -1422,6 +1468,22 @@ public final class Window {
          */
         public Builder darkTitleBar() {
             this.darkTitleBar = true;
+            return this;
+        }
+
+        /**
+         * Syncs this window's native title bar with the OS color scheme ({@link SystemTheme#current()})
+         * at startup and automatically updates it whenever the user toggles Light/Dark mode in
+         * OS settings.
+         */
+        public Builder followSystemTheme() {
+            this.followSystemTheme = true;
+            return this;
+        }
+
+        /** Sets whether this window's native title bar follows the OS color scheme. */
+        public Builder followSystemTheme(boolean follow) {
+            this.followSystemTheme = follow;
             return this;
         }
 

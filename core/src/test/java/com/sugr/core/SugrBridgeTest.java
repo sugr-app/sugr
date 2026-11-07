@@ -48,4 +48,18 @@ class SugrBridgeTest {
             assertEquals("UPDATER_DISABLED", errorCode(bridge.dispatch("[\"" + method + "\", \"{not json\"]")), method);
         }
     }
+
+    @Test
+    void appPathsAndThemeReturnValidJson() throws Exception {
+        Bridge bridge = bridge();
+        String pathsJson = bridge.dispatch("[\"sugr.app.paths\", \"[]\"]").get();
+        com.sugr.bridge.Json paths = com.sugr.bridge.Json.parse(pathsJson);
+        org.junit.jupiter.api.Assertions.assertFalse(paths.asObject().get("dataDir").asString().isBlank());
+        org.junit.jupiter.api.Assertions.assertFalse(paths.asObject().get("cacheDir").asString().isBlank());
+        org.junit.jupiter.api.Assertions.assertFalse(paths.asObject().get("logDir").asString().isBlank());
+
+        String themeJson = bridge.dispatch("[\"sugr.app.theme\", \"[]\"]").get();
+        String theme = com.sugr.bridge.Json.parse(themeJson).asString();
+        org.junit.jupiter.api.Assertions.assertTrue("light".equals(theme) || "dark".equals(theme));
+    }
 }

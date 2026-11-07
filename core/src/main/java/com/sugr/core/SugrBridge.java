@@ -37,6 +37,18 @@ final class SugrBridge {
             return Json.object(info).encode();
         });
 
+        bridge.register("sugr.app.paths", params -> {
+            String id = AppMetadata.get().identifier();
+            Map<String, Json> paths = new LinkedHashMap<>();
+            paths.put("dataDir", Json.of(AppPaths.dataDir(id).toString()));
+            paths.put("cacheDir", Json.of(AppPaths.cacheDir(id).toString()));
+            paths.put("logDir", Json.of(AppPaths.logDir(id).toString()));
+            return Json.object(paths).encode();
+        });
+
+        bridge.register("sugr.app.theme", params ->
+                Json.quote(SystemTheme.current().wireName()));
+
         bridge.register("sugr.updater.isSupported", params -> String.valueOf(Updater.shared() != null));
 
         bridge.register("sugr.updater.currentVersion", params ->
