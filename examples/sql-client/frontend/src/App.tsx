@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { app, type ThemeMode } from '@sugr/runtime'
 import { AppEvents } from './generated/AppEvents.generated'
 import { WindowControls } from './generated/WindowControls.generated'
 import { TitleBar } from './components/TitleBar'
@@ -10,8 +11,12 @@ import {
   connect,
   copyToClipboard,
   errorMessage,
+  exportResultsToFolder,
+  importSqlScripts,
   isDialogCancelled,
   listTables,
+  openDocs,
+  openLogFolder,
   pickDatabaseFile,
   query,
   rowsToClipboardText,
@@ -34,11 +39,14 @@ function App() {
   const [running, setRunning] = useState(false)
   const [rows, setRows] = useState<Row[]>([])
   const [elapsedMs, setElapsedMs] = useState<number | null>(null)
+  const [exportedPath, setExportedPath] = useState<string | null>(null)
 
   const [tables, setTables] = useState<string[]>([])
   const [tablesLoading, setTablesLoading] = useState(false)
 
   const [error, setError] = useState<string | null>(null)
+  const [theme, setTheme] = useState<ThemeMode>('light')
+  const [logDir, setLogDir] = useState<string | null>(null)
 
   // Off by default (Main.java doesn't call .customTitleBar() on the builder) - "Window >
   // Toggle custom title bar" flips it native-side and, since a menu action has no direct
@@ -58,6 +66,19 @@ function App() {
   useEffect(() => {
     void WindowControls.isCustomTitleBar().then(setCustomTitleBar)
     return AppEvents.onCustomTitleBarChanged(setCustomTitleBar)
+  }, [])
+
+  useEffect(() => {
+    function applyTheme(next: ThemeMode) {
+      setTheme(next)
+      document.documentElement.dataset.theme = next
+    }
+    void app.theme().then(applyTheme).catch(() => {})
+    void app
+      .paths()
+      .then((paths) => setLogDir(paths.logDir))
+      .catch(() => {})
+    return app.onThemeChanged(applyTheme)
   }, [])
 
   async function connectTo(path: string) {
@@ -93,6 +114,7 @@ function App() {
 
   async function handleRunQuery() {
     setError(null)
+    setExportedPath(null)
     setRunning(true)
     const start = performance.now()
     try {
@@ -106,6 +128,18 @@ function App() {
       setElapsedMs(null)
     } finally {
       setRunning(false)
+    }
+  }
+
+  async function handleImportScripts() {
+    setError(null)
+    try {
+      const imported = await importSqlScripts()
+      setSql(imported)
+    } catch (e) {
+      if (!isDialogCancelled(e)) {
+        setError(errorMessage(e))
+      }
     }
   }
 
@@ -134,14 +168,41 @@ function App() {
     }
   }
 
+  async function handleExportFolder() {
+    setError(null)
+    try {
+      const saved = await exportResultsToFolder(rowsToClipboardText(rows))
+      setExportedPath(saved)
+    } catch (e) {
+      if (!isDialogCancelled(e)) {
+        setError(errorMessage(e))
+      }
+    }
+  }
+
   return (
     <>
       {customTitleBar && <TitleBar />}
       {/* #sql-client's own CSS already gives it 32px of top padding by default - stack
           the 32px title bar height on top of that (64px), instead of under it, when shown. */}
       <main id="sql-client" style={customTitleBar ? { paddingTop: 64 } : undefined}>
-        <h1>{env.appTitle ?? 'sugr - SQL client'}</h1>
-        <p className="env-badge">env: {env.mode}</p>
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <div>
+            <h1>{env.appTitle ?? 'sugr - SQL client'}</h1>
+            <p className="env-badge">
+              env: {env.mode} · theme: {theme}
+              {logDir ? ` · logs: ${logDir}` : ''}
+            </p>
+          </div>
+          <div className="row">
+            <button type="button" onClick={() => void openLogFolder()}>
+              Open log folder
+            </button>
+            <button type="button" onClick={() => void openDocs()}>
+              Docs
+            </button>
+          </div>
+        </div>
 
         <ConnectionPanel
           dbPath={dbPath}
@@ -152,7 +213,13 @@ function App() {
           onConnect={handleConnect}
         />
 
-        <QueryEditor sql={sql} running={running} onSqlChange={setSql} onRun={handleRunQuery} />
+        <QueryEditor
+          sql={sql}
+          running={running}
+          onSqlChange={setSql}
+          onRun={handleRunQuery}
+          onImportScripts={handleImportScripts}
+        />
 
         {error && <p className="error-banner">{error}</p>}
 
@@ -163,7 +230,13 @@ function App() {
           onSelectTable={handleSelectTable}
         />
 
-        <ResultsTable rows={rows} elapsedMs={elapsedMs} onCopy={handleCopyResults} />
+        <ResultsTable
+          rows={rows}
+          elapsedMs={elapsedMs}
+          exportedPath={exportedPath}
+          onCopy={handleCopyResults}
+          onExportFolder={handleExportFolder}
+        />
       </main>
     </>
   )

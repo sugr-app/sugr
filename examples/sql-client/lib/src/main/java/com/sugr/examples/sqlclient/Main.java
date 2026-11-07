@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class Main {
 
-    private static final String APP_ID = "sugr.examples.sqlclient";
+    static final String APP_ID = "sugr.examples.sqlclient";
     private static final String APP_NAME = "sugr - SQL client";
 
     public static void main(String[] args) throws Throwable {
@@ -27,7 +27,7 @@ public final class Main {
         // defaulting to "prod") - see docs/guide/environments.md.
         AppConfig config = AppConfig.load("SUGR_ENV", "prod");
 
-        SqlService sqlService = new SqlService();
+        SqlService sqlService = new SqlService(APP_ID);
         SqlServiceBridge generatedBridge = new SqlServiceBridge(sqlService);
         WindowControls windowControls = new WindowControls();
         WindowControlsBridge windowControlsBridge = new WindowControlsBridge(windowControls);
@@ -49,6 +49,7 @@ public final class Main {
                 .splashScreen()
                 .appName(APP_ID)
                 .restoreWindowState(true)
+                .followSystemTheme()
                 .frontend(Frontend.auto())
                 .menu(AppMenu.build(appRef, APP_ID, APP_NAME, exePath))
                 .onReady(app -> {

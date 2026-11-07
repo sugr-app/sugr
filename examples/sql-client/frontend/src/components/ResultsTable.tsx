@@ -3,10 +3,18 @@ import type { Row } from '../services/sqlClient'
 interface ResultsTableProps {
   rows: Row[]
   elapsedMs: number | null
+  exportedPath: string | null
   onCopy: () => void
+  onExportFolder: () => void
 }
 
-export function ResultsTable({ rows, elapsedMs, onCopy }: ResultsTableProps) {
+export function ResultsTable({
+  rows,
+  elapsedMs,
+  exportedPath,
+  onCopy,
+  onExportFolder,
+}: ResultsTableProps) {
   const columns = rows.length > 0 ? Object.keys(rows[0]) : []
 
   return (
@@ -22,8 +30,13 @@ export function ResultsTable({ rows, elapsedMs, onCopy }: ResultsTableProps) {
           <button type="button" onClick={onCopy} disabled={rows.length === 0}>
             Copy as TSV
           </button>
+          <button type="button" onClick={onExportFolder} disabled={rows.length === 0}>
+            Export TSV to folder...
+          </button>
         </div>
       </div>
+
+      {exportedPath && <p className="hint">Exported to: {exportedPath}</p>}
 
       {rows.length === 0 ? (
         <p className="hint">No results yet.</p>

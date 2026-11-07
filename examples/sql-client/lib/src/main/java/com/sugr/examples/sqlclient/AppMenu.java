@@ -1,20 +1,25 @@
 package com.sugr.examples.sqlclient;
 
+import com.sugr.core.AppPaths;
 import com.sugr.core.Application;
 import com.sugr.core.AutoStart;
 import com.sugr.core.Dialogs;
 import com.sugr.core.Menu;
 import com.sugr.core.Notification;
+import com.sugr.core.Shell;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * The app's native menu bar - File (load a DB file, reload, quit), Settings
- * (launch-at-login toggle), and Help (about). Split out of Main so its
- * wiring doesn't crowd the app's startup sequence.
+ * The app's native menu bar - File (load a DB file, open log folder, reload, quit),
+ * Settings (launch-at-login toggle), Window, and Help (docs, about). Split out of
+ * Main so its wiring doesn't crowd the app's startup sequence.
  */
 final class AppMenu {
+
+    private static final String DOCS_URL = "https://sugr-app.github.io/sugr/";
 
     private AppMenu() {
     }
@@ -36,6 +41,7 @@ final class AppMenu {
         return new Menu()
                 .submenu("File", new Menu()
                         .item("Load DB file...", () -> loadDbFile(appRef.get()))
+                        .item("Open log folder", () -> Shell.openPath(AppPaths.logDir(appId)))
                         .separator()
                         .item("Reload app", () -> appRef.get().mainWindow().reload())
                         .separator()
@@ -68,6 +74,8 @@ final class AppMenu {
                         .item("Restore", () -> appRef.get().mainWindow().restore())
                         .item("Minimize to tray", () -> appRef.get().mainWindow().minimizeToTray()))
                 .submenu("Help", new Menu()
+                        .item("Documentation", () -> Shell.openUrl(DOCS_URL))
+                        .separator()
                         .item("About", () -> {
                             Application app = appRef.get();
                             Dialogs.showMessage(app.mainWindow().nativeHandle(), "About",
@@ -87,7 +95,10 @@ final class AppMenu {
         // Owned by the main window (see Dialogs' javadoc) - otherwise this and the About
         // dialog above would each get their own unrelated taskbar entry instead of being
         // grouped with the app's.
-        String path = Dialogs.openFile(app.mainWindow().nativeHandle(), "Choose a SQLite database", "db", "sqlite");
+        String path = Dialogs.openFile(app.mainWindow().nativeHandle(), "Choose a SQLite database", List.of(
+                new Dialogs.FileFilter("SQLite databases", "db", "sqlite", "sqlite3"),
+                new Dialogs.FileFilter("All files", "*")
+        ));
         if (path != null) {
             new AppEventsEmitter(app.mainWindow()).menuLoadDb(path);
         }

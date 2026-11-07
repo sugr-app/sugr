@@ -2,11 +2,14 @@ package com.sugr.examples.sqlclient;
 
 import com.sugr.bridge.Bind;
 import com.sugr.bridge.BridgeException;
+import com.sugr.core.AppPaths;
 import com.sugr.core.Clipboard;
 import com.sugr.core.Dialogs;
 import com.sugr.core.NativeLibrary;
 import com.sugr.core.Notification;
+import com.sugr.core.Shell;
 
+import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemorySegment;
@@ -14,7 +17,11 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,7 +34,10 @@ import java.util.Map;
  */
 final class SqlService implements AutoCloseable {
 
+    private static final String DOCS_URL = "https://sugr-app.github.io/sugr/";
+
     private final Arena arena = Arena.ofShared();
+    private final String appId;
     private final MethodHandle sqlite3_open;
     private final MethodHandle sqlite3_exec;
     private final MethodHandle sqlite3_close;
@@ -38,7 +48,8 @@ final class SqlService implements AutoCloseable {
     private List<Map<String, String>> lastRows;
     private final String iconPath;
 
-    SqlService() throws Throwable {
+    SqlService(String appId) throws Throwable {
+        this.appId = appId;
         Path dllPath = NativeLibrary.extractToTempFile(SqlService.class, "/native/sqlite3.dll", "sqlite3", ".dll");
         NativeLibrary sqlite = new NativeLibrary(dllPath, arena);
         // Used as the connect() notification's icon (see Notification.show's iconPath param) -
@@ -78,11 +89,68 @@ final class SqlService implements AutoCloseable {
      */
     @Bind
     String pickDatabaseFile() {
-        String path = Dialogs.openFile("Choose a SQLite database", "db", "sqlite");
+        String path = Dialogs.openFile("Choose a SQLite database", List.of(
+                new Dialogs.FileFilter("SQLite databases", "db", "sqlite", "sqlite3"),
+                new Dialogs.FileFilter("All files", "*")
+        ));
         if (path == null) {
             throw new BridgeException("DIALOG_CANCELLED", "No file was selected");
         }
         return path;
+    }
+
+    /**
+     * Native multi-select file dialog ({@link Dialogs#openFiles}) with named
+     * {@link Dialogs.FileFilter}s - reads and concatenates every picked
+     * {@code .sql} script so the user can import a batch into the editor.
+     */
+    @Bind
+    String importSqlScripts() throws IOException {
+        List<String> paths = Dialogs.openFiles("Select SQL scripts to import", List.of(
+                new Dialogs.FileFilter("SQL scripts", "sql"),
+                new Dialogs.FileFilter("All files", "*")
+        ));
+        if (paths.isEmpty()) {
+            throw new BridgeException("DIALOG_CANCELLED", "No SQL script was selected");
+        }
+        StringBuilder combined = new StringBuilder();
+        for (String rawPath : paths) {
+            Path file = Path.of(rawPath);
+            if (!combined.isEmpty()) {
+                combined.append("\n\n");
+            }
+            combined.append("-- ").append(file.getFileName()).append('\n');
+            combined.append(Files.readString(file, StandardCharsets.UTF_8).strip());
+        }
+        return combined.toString();
+    }
+
+    /**
+     * Native folder picker ({@link Dialogs#openFolder}) - writes {@code tsvContent}
+     * to {@code query-results.tsv} inside the chosen directory and returns the
+     * saved file path.
+     */
+    @Bind
+    String exportResultsToFolder(String tsvContent) throws IOException {
+        String folder = Dialogs.openFolder("Choose a folder to export query-results.tsv");
+        if (folder == null) {
+            throw new BridgeException("DIALOG_CANCELLED", "No folder was selected");
+        }
+        Path outFile = Path.of(folder).resolve("query-results.tsv");
+        Files.writeString(outFile, tsvContent, StandardCharsets.UTF_8);
+        return outFile.toString();
+    }
+
+    /** Opens this app's log directory ({@link AppPaths#logDir}) in the OS file manager via {@link Shell#openPath}. */
+    @Bind
+    void openLogFolder() {
+        Shell.openPath(AppPaths.logDir(appId));
+    }
+
+    /** Opens the sugr documentation in the user's default browser via {@link Shell#openUrl}. */
+    @Bind
+    void openDocs() {
+        Shell.openUrl(DOCS_URL);
     }
 
     /** Copies text (e.g. rendered query results) to the OS clipboard - see {@link Clipboard}. */
@@ -110,12 +178,13 @@ final class SqlService implements AutoCloseable {
         return "connected: " + path;
     }
 
-    /** Runs arbitrary SQL and returns every row seen by {@link #onExecRow}. */
+    /** Runs arbitrary SQL, logs the statement to {@link AppPaths#logDir}, and returns every row seen by {@link #onExecRow}. */
     @Bind
     List<Map<String, String>> query(String sql) throws Throwable {
         if (db.equals(MemorySegment.NULL)) {
             throw new IllegalStateException("Not connected - call connect() first");
         }
+        appendQueryHistoryLog(sql);
         lastRows = new ArrayList<>();
         MemorySegment sqlNative = arena.allocateFrom(sql);
         MemorySegment errMsgPtr = arena.allocate(ValueLayout.ADDRESS);
@@ -128,6 +197,17 @@ final class SqlService implements AutoCloseable {
             throw new RuntimeException("sqlite3_exec failed (" + result + "): " + message);
         }
         return lastRows;
+    }
+
+    private void appendQueryHistoryLog(String sql) {
+        try {
+            Path logFile = AppPaths.logDir(appId).resolve("query-history.log");
+            String entry = "[" + Instant.now() + "] " + sql.strip().replaceAll("\\R+", " ") + System.lineSeparator();
+            Files.writeString(logFile, entry, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException ignored) {
+            // best-effort query audit log
+        }
     }
 
     @Bind

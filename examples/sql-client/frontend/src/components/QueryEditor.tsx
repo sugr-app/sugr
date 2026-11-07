@@ -5,9 +5,16 @@ interface QueryEditorProps {
   running: boolean
   onSqlChange: (sql: string) => void
   onRun: () => void
+  onImportScripts: () => void
 }
 
-export function QueryEditor({ sql, running, onSqlChange, onRun }: QueryEditorProps) {
+export function QueryEditor({
+  sql,
+  running,
+  onSqlChange,
+  onRun,
+  onImportScripts,
+}: QueryEditorProps) {
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault()
@@ -29,6 +36,9 @@ export function QueryEditor({ sql, running, onSqlChange, onRun }: QueryEditorPro
       <div className="row">
         <button type="button" onClick={onRun} disabled={running}>
           {running ? 'Running...' : 'Run query'}
+        </button>
+        <button type="button" onClick={onImportScripts} disabled={running}>
+          Import .sql files...
         </button>
         <span className="hint">Ctrl/Cmd+Enter to run</span>
       </div>

@@ -5,7 +5,17 @@ export type Row = Record<string, string | null>
 
 /** Thin re-export - components call this instead of the generated stub directly, so a
  * future non-generated concern (retries, logging, ...) has one place to live. */
-export const { connect, query, listTables, pickDatabaseFile, copyToClipboard } = SqlService
+export const {
+  connect,
+  query,
+  listTables,
+  pickDatabaseFile,
+  importSqlScripts,
+  exportResultsToFolder,
+  openLogFolder,
+  openDocs,
+  copyToClipboard,
+} = SqlService
 
 export function isDialogCancelled(error: unknown): boolean {
   return (error as BridgeError)?.code === 'DIALOG_CANCELLED'

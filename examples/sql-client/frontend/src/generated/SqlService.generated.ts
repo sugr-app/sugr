@@ -5,6 +5,18 @@ export const SqlService = {
   pickDatabaseFile(): Promise<string> {
     return invoke('pickDatabaseFile', [])
   },
+  importSqlScripts(): Promise<string> {
+    return invoke('importSqlScripts', [])
+  },
+  exportResultsToFolder(tsvContent: string): Promise<string> {
+    return invoke('exportResultsToFolder', [tsvContent])
+  },
+  openLogFolder(): Promise<void> {
+    return invoke('openLogFolder', [])
+  },
+  openDocs(): Promise<void> {
+    return invoke('openDocs', [])
+  },
   copyToClipboard(text: string): Promise<void> {
     return invoke('copyToClipboard', [text])
   },
