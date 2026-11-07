@@ -56,12 +56,24 @@ new Window.Builder()
     .minSize(400, 300)
     .maxSize(1200, 900)
     .alwaysOnTop(true)
+    .darkTitleBar()
+    .followSystemTheme()
+    .customTitleBar()
+    .restoreWindowState(true)
+    .devTools(false)
     .icon("assets/icon.ico")
 ```
 
-`alwaysOnTop`/`icon` are Windows-only for now (no-ops elsewhere) - see
-[How it works](/how-it-works) for why sugr's per-OS native features get
-implemented incrementally rather than all at once.
+`alwaysOnTop`/`icon`/`darkTitleBar`/`followSystemTheme`/`customTitleBar` are
+Windows-only for now (no-ops elsewhere) - see [How it works](/how-it-works) for
+why sugr's per-OS native features get implemented incrementally rather than all
+at once.
+
+At runtime, a `Window` also exposes state and geometry controls (`minimize()`,
+`maximize()`, `restore()`, `minimizeToTray()`, `hide()`, `show()`,
+`setFullscreen(boolean)`, `setAlwaysOnTop(boolean)`, `setDarkTitleBar(boolean)`,
+`setCustomTitleBar(boolean)`, `startDrag()`, `reportMaxButtonBounds(...)`,
+`position()`/`setPosition(x, y)`, `size()`/`setSize(w, h)`).
 
 ### Window events
 
@@ -72,6 +84,7 @@ new Window.Builder()
     .onFocus(window -> System.out.println("focused"))
     .onBlur(window -> System.out.println("blurred"))
     .onResize((window, w, h) -> System.out.println("resized to " + w + "x" + h))
+    .onThemeChanged(theme -> System.out.println("OS theme is now " + theme))
 ```
 
 `onCloseRequested` returning `false` vetoes the close - the window stays open

@@ -43,10 +43,25 @@ try {
 ## API
 
 ```java
-Dialogs.openFile(String title, String... extensions)   // -> picked path, or null if cancelled
-Dialogs.saveFile(String title, String... extensions)    // -> picked path, or null if cancelled
-Dialogs.showMessage(String title, String message)        // -> void
-Dialogs.confirm(String title, String message)             // -> true if the user picked Yes
+Dialogs.openFile(String title, String... extensions)              // -> picked path, or null if cancelled
+Dialogs.openFile(String title, List<Dialogs.FileFilter> filters)  // -> picked path, or null if cancelled
+Dialogs.openFiles(String title, String... extensions)             // -> List<String> (empty if cancelled)
+Dialogs.openFiles(String title, List<Dialogs.FileFilter> filters) // -> List<String> (empty if cancelled)
+Dialogs.openFolder(String title)                                  // -> picked directory path, or null if cancelled
+Dialogs.saveFile(String title, String... extensions)              // -> picked path, or null if cancelled
+Dialogs.saveFile(String title, List<Dialogs.FileFilter> filters)  // -> picked path, or null if cancelled
+Dialogs.showMessage(String title, String message)                 // -> void
+Dialogs.confirm(String title, String message)                     // -> true if the user picked Yes
+
+AppPaths.dataDir() / AppPaths.dataDir(String appName)             // -> OS config/data dir (created on first use)
+AppPaths.cacheDir() / AppPaths.cacheDir(String appName)           // -> OS cache dir (created on first use)
+AppPaths.logDir() / AppPaths.logDir(String appName)               // -> OS log dir (created on first use)
+
+Shell.openUrl(String url)                                         // -> opens http/https/mailto in default browser/mail client
+Shell.openPath(Path path) / Shell.openPath(String path)           // -> opens folder/file in OS file manager / default handler
+
+SystemTheme.current()                                             // -> SystemTheme.LIGHT or SystemTheme.DARK
+SystemTheme.isDarkTheme()                                         // -> boolean
 
 Clipboard.read()          // -> current clipboard text, or null
 Clipboard.write(String text)

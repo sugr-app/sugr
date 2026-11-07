@@ -10,7 +10,7 @@ To run the docs locally while contributing: `pnpm --filter sugr-docs dev`.
 
 ## Status
 
-**v0.1.0 released; v0.2 in progress.** The phased roadmap is in [plan.md](plan.md), kept as project history.
+**v0.2.0 released.** The long-term enterprise roadmap is in [ROADMAP.md](ROADMAP.md) (and [plan.md](plan.md) is kept as v0.1 project history).
 [`examples/sql-client`](examples/sql-client) runs entirely on the public API: most methods are exposed with a single `@Bind` annotation (no hand-written JSON), one method stays hand-written to show it composes with generated bindings, `@Emits` pushes Java→JS events from native menu/shortcut actions, and the two-way event bus works end to end.
 `sugr init/dev/debug/build/package/doctor` automate the day-to-day workflow (see [CLI](#cli) below). `sugr package` builds a native-image binary and wraps it into an NSIS installer on Windows, tested end to end.
 

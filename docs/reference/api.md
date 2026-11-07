@@ -127,6 +127,9 @@ calling `invoke()` directly - see [Binding Java to JS](/guide/bind).
 
 ```ts
 app.info(): Promise<{ name: string; version: string; identifier: string }>
+app.paths(): Promise<{ dataDir: string; cacheDir: string; logDir: string }>
+app.theme(): Promise<'light' | 'dark'>
+app.onThemeChanged(listener: (theme: 'light' | 'dark') => void): () => void
 ```
 
 ### `updater`
